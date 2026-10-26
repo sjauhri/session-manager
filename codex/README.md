@@ -1,5 +1,17 @@
 # session-manager / codex
 
+> **Experimental.** `codex app-server` is marked `[experimental]` by Codex itself, and its protocol may
+> change between releases.
+>
+> | part | tested how |
+> |---|---|
+> | `status`, `dir`, `lost` | throwaway threads on 0.163.0; read-only check on 0.164.0 |
+> | `send`, `wake`, Codex → Claude replies | throwaway threads on 0.163.0 only |
+> | `restore` | one simulated crash (private app-server killed mid-turn, 0.163.0). Has run at each real restart since, but never found a cut-off thread, so it has never revived a real one |
+> | `install-rules` | rendered rules checked with `codex execpolicy check` |
+>
+> Not tested: threads open in the VS Code extension or TUI during a restore, and many threads at once.
+
 Codex sessions are threads on the local app-server daemon (`codex app-server daemon`). `csm.py` lists,
 messages and wakes them. Sessions of either tool use the cross-tool [`../sm.py`](../sm.py); how it works
 and the verified facts: [`../docs/current_plans/cross_tool_messaging.md`](../docs/current_plans/cross_tool_messaging.md).

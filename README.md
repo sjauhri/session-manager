@@ -11,14 +11,18 @@ The manager is itself a background Claude session (`session-manager`) that follo
 one command after a restart, and it does the rest.
 
 > Built on Claude Code and Codex internals (session records, daemon log, sockets, app-server RPC),
-> not public APIs. Verified on Claude Code 2.1.303–2.1.310 and codex-cli 0.163.0 on Linux. An upgrade
-> may break it; the facts it relies on are listed in [`docs/current_plans/`](docs/current_plans/).
+> not public APIs. An upgrade may break it; the facts it relies on are listed in
+> [`docs/current_plans/`](docs/current_plans/).
+>
+> - **Claude Code: in daily use** since 2026-10-21 (2.1.303–2.1.310): several real restarts, 10+ sessions each.
+> - **Codex: experimental.** It runs on `codex app-server`, which Codex itself marks `[experimental]`.
+>   Tested only on throwaway threads (codex-cli 0.163.0), not in daily use. Details: [`codex/README.md`](codex/README.md).
 
 ## Requirements
 
 - Linux (reads `/proc`), Python 3.9+, stdlib only.
 - Claude Code with background sessions (`claude --bg`, `claude agents`).
-- Optional: Codex CLI with the app-server daemon (`codex app-server daemon`).
+- Optional, experimental: Codex CLI with the app-server daemon (`codex app-server daemon`).
 - Optional: SLURM, for job-end warnings.
 
 ## Setup
@@ -55,7 +59,7 @@ This resumes the manager with "run the restart runbook" ([`claude/README.md`](cl
 | folder | tool | what |
 |---|---|---|
 | [`claude/`](claude/README.md) | Claude Code background sessions | `sm.py` + restart runbook |
-| [`codex/`](codex/README.md) | Codex threads on the app-server daemon | `csm.py` (status, dir, send, wake, restore) |
+| [`codex/`](codex/README.md) | Codex threads on the app-server daemon | **experimental**: `csm.py` (status, dir, send, wake, restore) |
 | [`sm.py`](sm.py) | all tools | cross-tool `dir`, `send`, `wake`: any session reaches any other |
 | [`docs/`](docs/README.md) | | design, verified facts, TODO |
 

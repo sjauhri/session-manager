@@ -2,7 +2,8 @@
 
 How any session (Claude or Codex) finds, messages and wakes any other, through the top-level
 [`sm.py`](../../sm.py). Verified 2026-10-19 on Claude Code 2.1.303 and codex-cli 0.163.0, on throwaway
-sessions only.
+sessions only. The Codex side is experimental: it uses `codex app-server`, which Codex marks
+`[experimental]` ([status](../../codex/README.md)).
 
 ## Why each tool's own channel
 
