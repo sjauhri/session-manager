@@ -1,0 +1,21 @@
+# Lets Codex sessions list and message other agent sessions. Their sockets are outside the sandbox, so
+# these session-manager verbs run unsandboxed. Global: every Codex thread gets it.
+# Template: `python3 codex/csm.py install-rules` fills in this checkout's paths and copies it to
+# ~/.codex/rules/ (Codex skips symlinked .rules files). Rules load when a thread starts.
+SM = @SM_PATHS@
+
+# dir / send: read the directory, message a live session. No prompt.
+prefix_rule(
+    pattern = ["python3", SM, ["dir", "send"]],
+    decision = "allow",
+    justification = "session-manager: list and message live peer sessions",
+    match = [["python3", "@SM@", "send", "some-peer", "-m", "hi"]],
+    not_match = [["python3", "@CLAUDE_SM@", "restore"]],
+)
+
+# wake starts a stopped session and costs usage: the user approves each one.
+prefix_rule(
+    pattern = ["python3", SM, "wake"],
+    decision = "prompt",
+    justification = "session-manager wake starts a stopped session (uses your usage limit)",
+)

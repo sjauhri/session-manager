@@ -1,0 +1,7 @@
+state/
+*.lock
+*.tmp*
+__pycache__/
+# local, per-user: copy config.example.json; fleet.json is written by `sm.py keep`
+config.json
+fleet.json
