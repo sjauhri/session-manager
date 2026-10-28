@@ -73,13 +73,13 @@ def find(q):
 def sender(a):
     if a.sender:
         return a.sender, "named"
+    c = cx.caller()  # first: a Codex shell can inherit CLAUDE_JOB_DIR from whoever started the daemon
+    if c:
+        return c[0], "codex"
     j = cl.caller()
     if j:
         rec = cl.live().get(j)
         return (rec or {}).get("name") or j, "claude"
-    c = cx.caller()
-    if c:
-        return c[0], "codex"
     return "the user's shell", "shell"
 
 

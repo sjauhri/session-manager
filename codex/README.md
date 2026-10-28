@@ -7,10 +7,14 @@
 > |---|---|
 > | `status`, `dir`, `lost` | throwaway threads on 0.163.0; read-only check on 0.164.0 |
 > | `send`, `wake`, Codex → Claude replies | throwaway threads on 0.163.0 only |
-> | `restore` | one simulated crash (private app-server killed mid-turn, 0.163.0). Has run at each real restart since, but never found a cut-off thread, so it has never revived a real one |
+> | `restore` | one simulated crash (0.163.0) and one real job end (2026-10-28, 0.164.0): a canary thread killed mid-turn was found, reloaded, and took the right branch. Its first shell calls failed because the sandbox hit a slow NFS automount right after boot; a retry passed |
 > | `install-rules` | rendered rules checked with `codex execpolicy check` |
 >
 > Not tested: threads open in the VS Code extension or TUI during a restore, and many threads at once.
+>
+> Known issue: Codex's Linux sandbox (`bwrap --ro-bind / /`) waits on every automount. Right after a
+> reboot a slow NFS automount can make the first sandboxed commands hang, then fail with `Invalid
+> argument`. Resumed threads may need one retry.
 
 Codex sessions are threads on the local app-server daemon (`codex app-server daemon`). `csm.py` lists,
 messages and wakes them. Sessions of either tool use the cross-tool [`../sm.py`](../sm.py); how it works

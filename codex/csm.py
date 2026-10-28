@@ -220,7 +220,10 @@ def ensure_daemon():
         return
     except (OSError, ConnectionError):
         pass
-    subprocess.run(["codex", "app-server", "daemon", "start"], capture_output=True, text=True, timeout=120)
+    # the daemon and every Codex shell inherit this env: drop the caller's Claude session vars, or Codex
+    # threads would pass for that Claude session (CLAUDE_JOB_DIR) and hold its messaging token
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE", "CODEX_THREAD_ID"))}
+    subprocess.run(["codex", "app-server", "daemon", "start"], capture_output=True, text=True, timeout=120, env=env)
     for _ in range(30):
         try:
             Rpc()
