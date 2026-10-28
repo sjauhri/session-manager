@@ -12,9 +12,12 @@
 >
 > Not tested: threads open in the VS Code extension or TUI during a restore, and many threads at once.
 >
+> Start the daemon through `csm.py` (or from a shell without `CLAUDE*` variables): Codex threads inherit
+> the daemon's environment, and a Claude session's variables would make them pass for that session.
+>
 > Known issue: Codex's Linux sandbox (`bwrap --ro-bind / /`) waits on every automount. Right after a
 > reboot a slow NFS automount can make the first sandboxed commands hang, then fail with `Invalid
-> argument`. Resumed threads may need one retry.
+> argument`. The restart prompt tells threads to retry once.
 
 Codex sessions are threads on the local app-server daemon (`codex app-server daemon`). `csm.py` lists,
 messages and wakes them. Sessions of either tool use the cross-tool [`../sm.py`](../sm.py); how it works
@@ -45,6 +48,7 @@ Name the Codex threads other sessions should reach (`/rename` in Codex). Unnamed
 | `lost` | threads whose turn the last crash cut off (any name, named or not) |
 | `restore [--dry-run]` | after a host restart: start the daemon if needed, reload `lost` threads with a restart prompt |
 | `install-rules` | install the Codex exec-policy rule for this checkout (see Setup) |
+| `canary [--sleep S] [--name N]` | test `restore` yourself: start a throwaway thread that sleeps mid-turn (default 3600 s), restart the host, run `restore`, then `state/<name>/result` should read `restored ok`. Delete the thread afterwards |
 
 **Restore picks only interrupted work.** A thread is restored when its last turn has a `task_started`
 event and no end event in the rollout (the process was killed mid-turn), it started within 72 h, and no

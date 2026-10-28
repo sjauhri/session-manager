@@ -8,6 +8,7 @@
     csm.py lost                  threads whose turn was cut off by the last crash, and are still closed
     csm.py restore [--dry-run]   reload `lost` threads with a restart prompt (starts the daemon if needed)
     csm.py install-rules         install the exec-policy rule that lets Codex threads run ../sm.py dir/send
+    csm.py canary [--sleep S]    start a throwaway thread sleeping mid-turn, to test `restore` on the next restart
 
 Facts this relies on (verified on codex-cli 0.163.0, see ../docs/current_plans/cross_tool_messaging.md):
 - The daemon's control socket (~/.codex/app-server-control/app-server-control.sock) speaks JSON-RPC over
@@ -213,6 +214,13 @@ def lost(th):
     return sorted(out, key=lambda i: th[i]["name"] or "")
 
 
+def clean_env():
+    """The daemon and every Codex shell inherit the env of whoever starts the daemon (`codex queue` may start it
+    too). Drop the caller's Claude session vars, or Codex threads would pass for that Claude session
+    (CLAUDE_JOB_DIR) and hold its messaging token."""
+    return {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE", "CODEX_THREAD_ID"))}
+
+
 def ensure_daemon():
     """After a job restart the daemon is gone; start it (it holds no threads yet, so nothing is disturbed)."""
     try:
@@ -220,10 +228,8 @@ def ensure_daemon():
         return
     except (OSError, ConnectionError):
         pass
-    # the daemon and every Codex shell inherit this env: drop the caller's Claude session vars, or Codex
-    # threads would pass for that Claude session (CLAUDE_JOB_DIR) and hold its messaging token
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE", "CODEX_THREAD_ID"))}
-    subprocess.run(["codex", "app-server", "daemon", "start"], capture_output=True, text=True, timeout=120, env=env)
+    subprocess.run(["codex", "app-server", "daemon", "start"], capture_output=True, text=True, timeout=120,
+                   env=clean_env())
     for _ in range(30):
         try:
             Rpc()
@@ -248,7 +254,8 @@ def roles_line():
 
 def restart_prompt(uuid, t):
     return (f"You are `{label(uuid, t)}` (Codex thread {uuid}). Host restarted mid-turn: your running commands were "
-            "killed. Mid-task: continue. Done: stay idle.\n"
+            "killed. Mid-task: continue. Done: stay idle. If a shell call hangs or fails with a sandbox/mount error "
+            "right after the restart, wait a minute and retry once.\n"
             f"Peers (Claude+Codex): `python3 {TOP} dir`, then `send|wake <name> -m \"...\"`." + roles_line())
 
 
@@ -274,7 +281,7 @@ def caller():
 def deliver(uuid, text):
     """Queue text for a thread. The daemon runs it as a turn now if the thread is idle."""
     r = subprocess.run(["codex", "queue", "--thread", uuid, "--message", text],
-                       capture_output=True, text=True, timeout=120)
+                       capture_output=True, text=True, timeout=120, env=clean_env())
     out = "\n".join(l for l in (r.stdout + r.stderr).splitlines() if not l.startswith("WARNING"))
     if r.returncode or "Queued message" not in out:
         raise RuntimeError(out.strip() or f"codex queue exited {r.returncode}")
@@ -318,6 +325,24 @@ def cmd_restore(a):
             print(f"  FAILED {i}  {label(i, th[i])}: {e}", file=sys.stderr)
     print(f"Codex: {ok}/{len(ids)} cut-off thread(s) resumed")
     sys.exit(0 if ok == len(ids) else 1)
+
+
+def cmd_canary(a):
+    """Start a throwaway thread that sleeps mid-turn, so the next host restart leaves a cut-off thread to restore.
+    After the restart and `restore`, its dir holds `result` = `restored ok`. Delete it after with `thread/delete`."""
+    ensure_daemon()
+    d = os.path.join(HERE, "state", a.name)
+    os.makedirs(d, exist_ok=True)
+    rpc = Rpc()
+    # without these a thread started over RPC waits forever on its first approval prompt: no client answers
+    tid = rpc.call("thread/start", {"cwd": d, "sandbox": "workspace-write", "approvalPolicy": "never"})["thread"]["id"]
+    rpc.call("thread/name/set", {"threadId": tid, "name": a.name})
+    wake(tid, f"Restore canary for session-manager. Work only in {d}. Use one shell command per step, nothing else.\n"
+              f"If the file `started` exists there: write `restored ok` and the date to `result`, then stop.\n"
+              f"Otherwise: create `started`, then run `sleep {a.sleep}` as one command (set its timeout above "
+              f"{a.sleep} s), then write `no crash` to `result`, then stop.")
+    print(f"canary {a.name} ({tid}) sleeping {a.sleep} s in {d}. Restart the host within that time, run "
+          f"`csm.py restore`, then check {d}/result.")
 
 
 def cmd_status(a):
@@ -372,13 +397,15 @@ def main():
     sub.add_parser("status")
     sub.add_parser("lost")
     sub.add_parser("install-rules")
+    k = sub.add_parser("canary"); k.add_argument("--name", default="sm-canary"); k.add_argument("--sleep", type=int, default=3600)
     r = sub.add_parser("restore"); r.add_argument("--dry-run", action="store_true")
     d = sub.add_parser("dir"); d.add_argument("--json", action="store_true")
     for c in ("send", "wake"):
         s = sub.add_parser(c); s.add_argument("name"); s.add_argument("-m", "--message", required=True)
     a = p.parse_args()
     {None: cmd_status, "status": cmd_status, "dir": cmd_dir, "send": cmd_send, "wake": cmd_send,
-     "lost": cmd_lost, "restore": cmd_restore, "install-rules": cmd_install_rules}[a.cmd](a)
+     "lost": cmd_lost, "restore": cmd_restore, "install-rules": cmd_install_rules,
+     "canary": cmd_canary}[a.cmd](a)
 
 
 if __name__ == "__main__":
