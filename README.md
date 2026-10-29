@@ -60,7 +60,7 @@ This resumes the manager with "run the restart runbook" ([`claude/README.md`](cl
 |---|---|---|
 | [`claude/`](claude/README.md) | Claude Code background sessions | `sm.py` + restart runbook |
 | [`codex/`](codex/README.md) | Codex threads on the app-server daemon | **experimental**: `csm.py` (status, dir, send, wake, restore) |
-| [`sm.py`](sm.py) | all tools | cross-tool `dir`, `send`, `wake`: any session reaches any other |
+| [`sm.py`](sm.py) | all tools | cross-tool `dir`, `send`, `wake`: any session reaches any other; `remote`: registry of Claude sessions on other machines |
 | [`docs/`](docs/README.md) | | design, verified facts, TODO |
 
 Each tool folder has its own CLI, policy file (`fleet.json`, not in git) and runtime `state/` (not in
@@ -83,7 +83,9 @@ git). They share the same verbs:
 - **Never disturb a running session.** Don't restart, resume, stop or signal a live session unless the
   user asks. Re-check liveness right before acting.
 - Sessions reach each other across tools with `python3 <repo>/sm.py dir|send|wake`
-  ([how](docs/current_plans/cross_tool_messaging.md)).
+  ([how](docs/current_plans/cross_tool_messaging.md)). Claude sessions on other machines are reached
+  only with `SendMessage` to their `bridge:session_…` address, kept by `sm.py remote`
+  ([how](docs/current_plans/cross_tool_messaging.md#claude-sessions-on-other-machines)).
 - The manager messages one session at a time. Each message starts with "You are `<name>`", stays
   short (it lands in the session's context), lists only live peers if any, and ends with the
   `sessions_md` line if one is set.

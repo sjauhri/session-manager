@@ -4,20 +4,28 @@
     sm.py dir [--json]           live sessions of every tool: name, tool, status, address
     sm.py send NAME -m MSG       message a live session; the header says who sent it and how to reply
     sm.py wake NAME -m MSG       start a stopped session with MSG (a live one just gets the message)
+    sm.py remote [add NAME ADDR --host H | rm NAME | self]
+                                 Claude sessions on other machines, reached with SendMessage to their
+                                 `bridge:session_…` address; `self` prints this session's register line
 
 NAME is a session name or id prefix; prefix it with `claude:` or `codex:` if both tools have that name.
 The sender is found from CLAUDE_JOB_DIR / CODEX_THREAD_ID; pass --from in a plain shell.
 Per-tool commands (restore, keep, tick, ...) live in claude/sm.py and codex/csm.py.
 """
 import argparse
+import fcntl
 import importlib.util
 import json
 import os
+import re
 import shlex
+import socket
 import sys
+from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOP = os.path.join(HERE, "sm.py")
+REMOTE = os.path.join(HERE, "state", "remote.json")  # Claude sessions on other machines: name -> {addr, host, at}
 
 
 def _load(name, path):
@@ -36,6 +44,42 @@ def codex_threads():
         return cx.threads()
     except (OSError, ConnectionError, RuntimeError):  # daemon not running: no Codex sessions
         return {}
+
+
+def load_remote():
+    try:
+        return json.load(open(REMOTE))
+    except (OSError, ValueError):
+        return {}
+
+
+class remote_lock:
+    """Serialise read-modify-write of remote.json; written atomically (temp file + os.replace)."""
+    def __enter__(self):
+        os.makedirs(os.path.dirname(REMOTE), exist_ok=True)
+        self.f = open(REMOTE + ".lock", "w")
+        fcntl.flock(self.f, fcntl.LOCK_EX)
+        return load_remote()
+
+    def __exit__(self, *a):
+        fcntl.flock(self.f, fcntl.LOCK_UN)
+        self.f.close()
+
+
+def save_remote(reg):
+    tmp = REMOTE + f".tmp{os.getpid()}"
+    with open(tmp, "w") as f:
+        json.dump(reg, f, indent=1, ensure_ascii=False)
+        f.write("\n")
+    os.replace(tmp, REMOTE)
+
+
+def bridge_addr(s):
+    """`bridge:session_X` from that, `session_X`, or a claude.ai/code/session_X URL."""
+    m = re.search(r"session_[A-Za-z0-9]+", s)
+    if not m:
+        sys.exit(f"{s!r} is not a session address: expected bridge:session_… or a claude.ai/code/session_… URL")
+    return "bridge:" + m.group(0)
 
 
 def check_sandbox():
@@ -97,15 +141,26 @@ def cmd_dir(a):
     rows += [(t["name"], "codex", t["status"], "codex:" + i) for i, t in codex_threads().items()
              if t["name"] and cx.is_live(t)]
     rows.sort()
+    rows += sorted((n, "remote", r.get("host") or "-", r["addr"]) for n, r in load_remote().items())
     if a.json:
         print(json.dumps([dict(zip(["name", "tool", "status", "address"], r)) for r in rows], indent=1))
         return
     for r in rows:
         print("\t".join(r))
-    print(f"# {len(rows)} live. python3 {TOP} send|wake <name> -m \"...\" (Claude peers also take SendMessage)")
+    print(f"# python3 {TOP} send|wake <name> -m \"...\" (Claude peers also take SendMessage)."
+          + (" remote = another machine: from a Claude session, SendMessage to its address; the status column is its host."
+             if load_remote() else ""))
+
+
+def not_remote(q):
+    r = load_remote().get(q)
+    if r:
+        sys.exit(f"{q} is on another machine ({r.get('host') or '?'}); sm.py can't reach it. "
+                 f"From a Claude session: SendMessage to \"{r['addr']}\".")
 
 
 def cmd_send(a):
+    not_remote(a.name)
     tool, key, name, live = find(a.name)
     if not live:
         sys.exit(f"{name} ({tool}) is stopped; wake it with: python3 {TOP} wake {a.name} -m \"...\"")
@@ -119,6 +174,7 @@ def cmd_send(a):
 
 
 def cmd_wake(a):
+    not_remote(a.name)
     tool, key, name, live = find(a.name)
     if tool == "codex":
         cx.wake(key, wrap(a, a.message))
@@ -137,6 +193,34 @@ def cmd_wake(a):
     print(f"claude:{name} woken")
 
 
+def cmd_remote(a):
+    if a.op == "self":
+        bid = os.environ.get("CLAUDE_CODE_BRIDGE_SESSION_ID")
+        if not bid:
+            sys.exit("CLAUDE_CODE_BRIDGE_SESSION_ID is unset: run this from a Claude session on Remote Control "
+                     "(/remote-control).")
+        print(f"register {a.name or sender(a)[0]} host={socket.gethostname()} addr={bridge_addr(bid)}")
+        return
+    if a.op in ("add", "rm"):
+        if not a.name or (a.op == "add" and not a.addr):
+            sys.exit(f"usage: sm.py remote {a.op} NAME" + (" ADDR [--host H]" if a.op == "add" else ""))
+        with remote_lock() as reg:
+            if a.op == "add":
+                addr = bridge_addr(a.addr)
+                host = a.host or (reg.get(a.name) or {}).get("host", "")
+                for n in [n for n, r in reg.items() if r["addr"] == addr and n != a.name]:
+                    host = host or reg[n].get("host", "")
+                    del reg[n]  # same session re-registered under a new name
+                reg[a.name] = {"addr": addr, "host": host,
+                               "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+            elif reg.pop(a.name, None) is None:
+                sys.exit(f"{a.name} is not registered")
+            save_remote(reg)
+        cl.log(f"remote {a.op} {a.name}" + (f" {reg[a.name]['addr']}" if a.op == "add" else ""))
+    for n, r in sorted(load_remote().items()):
+        print(f"{n}\t{r.get('host') or '-'}\t{r['addr']}\tregistered {r['at']}")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -146,8 +230,14 @@ def main():
         s.add_argument("name")
         s.add_argument("-m", "--message", required=True)
         s.add_argument("--from", dest="sender", help="sender name, when run from a plain shell")
+    r = sub.add_parser("remote", help="Claude sessions on other machines")
+    r.add_argument("op", nargs="?", default="list", choices=["list", "add", "rm", "self"])
+    r.add_argument("name", nargs="?", help="add/rm: the peer's name; self: this session's name (default: own)")
+    r.add_argument("addr", nargs="?", help="add: bridge:session_…, session_… or its claude.ai/code URL")
+    r.add_argument("--host", help="add: the machine it runs on")
+    r.set_defaults(sender=None)
     a = p.parse_args()
-    {"dir": cmd_dir, "send": cmd_send, "wake": cmd_wake}[a.cmd](a)
+    {"dir": cmd_dir, "send": cmd_send, "wake": cmd_wake, "remote": cmd_remote}[a.cmd](a)
 
 
 if __name__ == "__main__":

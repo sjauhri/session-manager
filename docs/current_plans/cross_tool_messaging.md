@@ -69,6 +69,33 @@ killing a private `codex app-server --listen unix://…` mid-turn (2026-10-20):
 A thread open in any client holds a flock on `~/.codex/thread-writer-locks/<uuid>.lock`; restore skips
 those and re-checks right before loading, so it never opens a thread twice.
 
+## Claude sessions on other machines
+
+Verified 2026-10-29 between two clusters (Claude Code 2.1.312), both ways. Needs Remote Control
+on both sides (`remoteControlAtStartup: true` in each machine's `~/.claude/settings.json`, or
+`/remote-control`) and a claude.ai login.
+
+- Only a live Claude session can send: the `SendMessage` tool, relayed by Anthropic's servers. No CLI
+  or public API exists, so `sm.py` can't, and Codex can't. The CLI uses an internal endpoint
+  (`/v1/code/sessions/<id>/events`, signed events); not worth depending on.
+- Other machines list a session by its **claude.ai title**, not its local name. Unnamed ones get
+  `<hostname>-<words>`. An old offline session can keep a title the live one also had: a send to it
+  just queues.
+- The reliable address is `bridge:session_<id>`: the session's `$CLAUDE_CODE_BRIDGE_SESSION_ID`, the
+  id in its claude.ai/code URL, and the `from` of any message it sends.
+- An offline target queues until its machine reconnects. Nothing can wake it from here.
+
+Registry: the manager keeps `state/remote.json` (`sm.py remote add|rm`); `sm.py dir` lists the
+entries as tool `remote` with the host and address. Any local Claude session can then send
+with `SendMessage` to that address. `sm.py send` to a remote name prints that address and exits.
+To register a session on another machine, paste into it (the manager's address comes from
+`sm.py remote self`, run in the manager):
+
+> Send SendMessage to `bridge:session_<manager id>`: "register <your name> host=<hostname>
+> addr=bridge:$CLAUDE_CODE_BRIDGE_SESSION_ID" (fill in the values). Send it again after you are resumed.
+
+The manager then runs `sm.py remote add <name> <addr> --host <host>`.
+
 ## Open
 
 See [`../TODO.md`](../TODO.md).

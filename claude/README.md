@@ -45,7 +45,11 @@ reports back. If the manager is already live, tell it "run the restart runbook".
    - Arm a recurring `sm.py tick --apply` (every 60 min) only if `fleet.json` gives some session an
      hours-based `keep`. Otherwise there is nothing to check, and each cron fire costs a manager turn.
    - Crons don't survive a restart, so re-arm them every time.
-4. Report to the user what was resumed (Claude and Codex), what failed, and the job end time. List the
+4. Remote peers (only if `../sm.py remote` lists any): your own address may have changed. Run
+   `../sm.py remote self`, then send each peer, one at a time, with `SendMessage` to its address:
+   "You are `<name>`. `<manager>` is now at `bridge:session_…`: send `register` lines there."
+   Peers left offline get it when their machine reconnects.
+5. Report to the user what was resumed (Claude and Codex), what failed, and the job end time. List the
    sessions left asleep in one line.
 
 ## Commands
