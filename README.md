@@ -5,6 +5,8 @@ connected when the host they run on restarts: a time-limited cluster job (e.g. S
 
 - **Restore:** after a restart, it resumes only the sessions that were mid-work. Idle ones stay asleep.
 - **Find and message:** any session can list, message and wake any other, across Claude and Codex.
+- **Across machines:** Claude sessions on other hosts or clusters register their Remote Control address;
+  every session here learns it and messages them directly ([how](docs/current_plans/cross_tool_messaging.md#claude-sessions-on-other-machines)).
 - **Idle policy:** it sets how long sessions may stay idle before they are stopped.
 
 The manager is itself a background Claude session (`session-manager`) that follows a runbook. You run
