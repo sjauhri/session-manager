@@ -23,7 +23,8 @@ reports back. If the manager is already live, tell it "run the restart runbook".
 
    The daemon.log replay is not used to decide this, because a later small daemon restart can hide the
    real crash. Each resumed session gets a short prompt: who it is, why it was resumed, its own note if
-   any, how to reach peers (`../sm.py dir|send|wake`), plus the `sessions_md` line.
+   any, how to reach peers (`../sm.py dir|send|wake`), the remote peers' addresses (`../sm.py remote`),
+   plus the `sessions_md` line.
 
    Other sessions stay asleep. A `request` does not resume anyone. Instead:
    - a failed session gets its own note back;
@@ -47,8 +48,10 @@ reports back. If the manager is already live, tell it "run the restart runbook".
    - Crons don't survive a restart, so re-arm them every time.
 4. Remote peers (only if `../sm.py remote` lists any): your own address may have changed. Run
    `../sm.py remote self`, then send each peer, one at a time, with `SendMessage` to its address:
-   "You are `<name>`. `<manager>` is now at `bridge:session_…`: send `register` lines there."
-   Peers left offline get it when their machine reconnects.
+   "You are `<name>`. `<manager>` is now at `bridge:session_…`: send `register` lines there.
+   Sessions here: `<name>` bridge:session_…; …" (live ones, from the last column of `../sm.py dir`).
+   Peers left offline get it when their machine reconnects. Sessions here learn the remote peers from
+   their restart prompt.
 5. Report to the user what was resumed (Claude and Codex), what failed, and the job end time. List the
    sessions left asleep in one line.
 

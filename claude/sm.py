@@ -47,6 +47,7 @@ CLAUDE = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude")
 REQUESTS = os.path.join(STATE, "resume_requests.json")  # one-shot: passed to the requester's lead at restore, then cleared
 FAILED_WINDOW_H = 50  # restarts happen within ~2 days: older `failed` marks are not from the last crash
 TOP = os.path.join(os.path.dirname(HERE), "sm.py")  # cross-tool dir/send/wake
+REMOTE = os.path.join(os.path.dirname(HERE), "state", "remote.json")  # Claude sessions on other machines, by ../sm.py remote
 
 
 def load_config():
@@ -65,6 +66,22 @@ SLURM_JOB = CFG.get("slurm_job_name") or ""  # optional: the SLURM job the sessi
 
 def roles_line():
     return f"\nWho leads whom and who owns what: {SESSIONS_MD}" if SESSIONS_MD else ""
+
+
+def load_remote():
+    """name -> {addr, host, at}"""
+    try:
+        return json.load(open(REMOTE))
+    except (OSError, ValueError):
+        return {}
+
+
+def remote_line():
+    reg = load_remote()
+    if not reg:
+        return ""
+    return ("\nOn other machines (SendMessage to the address; sm.py can't reach them): "
+            + "; ".join(f"`{n}` ({r.get('host') or '?'}) {r['addr']}" for n, r in sorted(reg.items())))
 
 
 # ---------- data sources ----------
@@ -240,7 +257,7 @@ def restart_prompt(sid, ag, why):
     return (f"You are `{name(sid, ag)}` (session {ag[sid]['sessionId']}). {why}\n"
             "Shells, monitors, /loop and crons died: re-arm what you need. Mid-task: continue. Done: stay idle.\n"
             f"Peers (Claude+Codex): `python3 {TOP} dir`, then `send|wake <name> -m \"...\"`. "
-            "Stopped sub-sessions stay asleep: wake one when you need it." + roles_line())
+            "Stopped sub-sessions stay asleep: wake one when you need it." + remote_line() + roles_line())
 
 
 def job_end_minutes():

@@ -86,8 +86,10 @@ on both sides (`remoteControlAtStartup: true` in each machine's `~/.claude/setti
 - An offline target queues until its machine reconnects. Nothing can wake it from here.
 
 Registry: the manager keeps `state/remote.json` (`sm.py remote add|rm`); `sm.py dir` lists the
-entries as tool `remote` with the host and address. Any local Claude session can then send
-with `SendMessage` to that address. `sm.py send` to a remote name prints that address and exits.
+entries as tool `remote` with the host and address; its last column is every session's bridge
+address (local ones from `bridgeSessionId` in `~/.claude/sessions/<pid>.json`). Any local Claude
+session can send with `SendMessage` to a remote address, and the restart prompt lists the remote
+peers, so every resumed session knows them. `sm.py send` to a remote name prints that address and exits.
 To register a session on another machine, paste into it (the manager's address comes from
 `sm.py remote self`, run in the manager):
 

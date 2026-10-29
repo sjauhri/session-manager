@@ -6,7 +6,8 @@
     sm.py wake NAME -m MSG       start a stopped session with MSG (a live one just gets the message)
     sm.py remote [add NAME ADDR --host H | rm NAME | self]
                                  Claude sessions on other machines, reached with SendMessage to their
-                                 `bridge:session_…` address; `self` prints this session's register line
+                                 `bridge:session_…` address; `self` prints this session's register line.
+                                 `dir` lists them, and each local session's own bridge address (last column)
 
 NAME is a session name or id prefix; prefix it with `claude:` or `codex:` if both tools have that name.
 The sender is found from CLAUDE_JOB_DIR / CODEX_THREAD_ID; pass --from in a plain shell.
@@ -25,7 +26,6 @@ from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOP = os.path.join(HERE, "sm.py")
-REMOTE = os.path.join(HERE, "state", "remote.json")  # Claude sessions on other machines: name -> {addr, host, at}
 
 
 def _load(name, path):
@@ -37,19 +37,13 @@ def _load(name, path):
 
 cl = _load("claude_sm", "claude/sm.py")
 cx = _load("codex_csm", "codex/csm.py")
+REMOTE, load_remote = cl.REMOTE, cl.load_remote
 
 
 def codex_threads():
     try:
         return cx.threads()
     except (OSError, ConnectionError, RuntimeError):  # daemon not running: no Codex sessions
-        return {}
-
-
-def load_remote():
-    try:
-        return json.load(open(REMOTE))
-    except (OSError, ValueError):
         return {}
 
 
@@ -136,14 +130,15 @@ def wrap(a, msg):
 
 def cmd_dir(a):
     check_sandbox()
-    rows =[(r.get("name") or s, "claude", r.get("status", "-"), "uds:" + r["messagingSocketPath"])
-            for s, r in cl.live().items()]
-    rows += [(t["name"], "codex", t["status"], "codex:" + i) for i, t in codex_threads().items()
+    # last column: the address other machines use (SendMessage); Codex has none
+    rows = [(r.get("name") or s, "claude", r.get("status", "-"), "uds:" + r["messagingSocketPath"],
+             "bridge:" + r["bridgeSessionId"] if r.get("bridgeSessionId") else "-") for s, r in cl.live().items()]
+    rows += [(t["name"], "codex", t["status"], "codex:" + i, "-") for i, t in codex_threads().items()
              if t["name"] and cx.is_live(t)]
     rows.sort()
-    rows += sorted((n, "remote", r.get("host") or "-", r["addr"]) for n, r in load_remote().items())
+    rows += sorted((n, "remote", r.get("host") or "-", r["addr"], r["addr"]) for n, r in load_remote().items())
     if a.json:
-        print(json.dumps([dict(zip(["name", "tool", "status", "address"], r)) for r in rows], indent=1))
+        print(json.dumps([dict(zip(["name", "tool", "status", "address", "bridge"], r)) for r in rows], indent=1))
         return
     for r in rows:
         print("\t".join(r))
