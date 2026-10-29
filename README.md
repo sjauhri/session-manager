@@ -1,52 +1,58 @@
 # session-manager
 
-Keeps long-running coding-agent sessions (Claude Code background sessions, Codex threads) alive and
-connected when the host they run on restarts: a time-limited cluster job (e.g. SLURM), a reboot, a crash.
+Keeps your background coding-agent sessions (Claude Code and Codex) going when the machine restarts.
+This covers a cluster job that hits its time limit, a reboot, or a crash.
 
-- **Restore:** after a restart, it resumes only the sessions that were mid-work. Idle ones stay asleep.
-- **Find and message:** any session can list, message and wake any other, across Claude and Codex.
-- **Across machines:** Claude sessions on other hosts or clusters register their Remote Control address;
-  every session here learns it and messages them directly ([how](docs/current_plans/cross_tool_messaging.md#claude-sessions-on-other-machines)).
-- **Idle policy:** it sets how long sessions may stay idle before they are stopped.
+What it does:
+- **Restore.** After a restart, it resumes only the sessions that were in the middle of work. Idle
+  sessions stay asleep.
+- **Message.** Any session can list, message and wake any other session, Claude or Codex.
+- **Other machines.** Claude sessions on other computers or clusters can message sessions here, and
+  the reverse. ([How](docs/current_plans/cross_tool_messaging.md#claude-sessions-on-other-machines))
+- **Idle time.** You set how long a session may sit idle before it is stopped.
 
-The manager is itself a background Claude session (`session-manager`) that follows a runbook. You run
-one command after a restart, and it does the rest.
+The manager is itself a background Claude session named `session-manager`. After a restart you run
+one command. The manager does the rest.
 
-> Built on Claude Code and Codex internals (session records, daemon log, sockets, app-server RPC),
-> not public APIs. An upgrade may break it; the facts it relies on are listed in
-> [`docs/current_plans/`](docs/current_plans/).
+> **It uses internal parts of Claude Code and Codex, not public APIs.** An update to either tool can
+> break it. The facts it relies on are written down in [`docs/current_plans/`](docs/current_plans/).
 >
-> - **Claude Code: in daily use** since 2026-10-21 (2.1.303–2.1.310): several real restarts, 10+ sessions each.
-> - **Codex: experimental.** It runs on `codex app-server`, which Codex itself marks `[experimental]`.
->   Tested only on throwaway threads (codex-cli 0.163.0), not in daily use. Details: [`codex/README.md`](codex/README.md).
+> - **Claude Code:** in daily use since 2026-10-21 (versions 2.1.303 to 2.1.312), through several
+>   real restarts of 10+ sessions each.
+> - **Codex: experimental.** It uses `codex app-server`, which Codex marks experimental. Tested on
+>   test threads and one real restart. See [`codex/README.md`](codex/README.md).
 
 ## Requirements
 
-- Linux (reads `/proc`), Python 3.9+, stdlib only.
+- Linux and Python 3.9+. No extra packages.
 - Claude Code with background sessions (`claude --bg`, `claude agents`).
-- Optional, experimental: Codex CLI with the app-server daemon (`codex app-server daemon`).
-- Optional: SLURM, for job-end warnings.
+- Optional: Codex CLI with its app-server daemon (experimental).
+- Optional: SLURM, to get a warning before the job ends.
+- Optional: Remote Control and a claude.ai login, to talk to other machines.
 
 ## Setup
 
 ```bash
 git clone <this repo> ~/session-manager && cd ~/session-manager
-cp config.example.json config.json        # edit, see below
-# the manager session: pinned so the daemon never idle-stops it
+cp config.example.json config.json        # edit it, see below
+# start the manager session and pin it, so it is never stopped for being idle
 claude --bg --name session-manager "You are the session manager. Read $PWD/claude/README.md and wait."
 python3 claude/sm.py keep session-manager pin
 python3 codex/csm.py install-rules        # only if you use Codex
 ```
 
-`config.json` (not in git; every key is optional):
+`config.json` is not in git. Every key is optional.
 
 | key | default | what it does |
 |---|---|---|
-| `manager_name` | `session-manager` | name of the manager session that `boot` resumes |
-| `sessions_md` | none | path to a doc saying who leads whom and who owns what; added to every manager message |
-| `slurm_job_name` | none | name of the SLURM job the sessions run in; `tick` then warns before it ends |
+| `manager_name` | `session-manager` | the manager session's name |
+| `sessions_md` | none | path to a doc that says who leads whom and who owns what. Added to every manager message |
+| `slurm_job_name` | none | your SLURM job's name. The manager then warns sessions before the job ends |
 
-Name your sessions (`--name` in Claude, `/rename` in Codex): peers find each other by name.
+Give every session a name (`--name` in Claude, `/rename` in Codex). Sessions find each other by name.
+
+To talk to other machines, also add `"remoteControlAtStartup": true` to `~/.claude/settings.json`
+on every machine. Then every new or woken session connects to Remote Control on its own.
 
 ## After a restart
 
@@ -54,43 +60,44 @@ Name your sessions (`--name` in Claude, `/rename` in Codex): peers find each oth
 python3 ~/session-manager/claude/sm.py boot
 ```
 
-This resumes the manager with "run the restart runbook" ([`claude/README.md`](claude/README.md)).
+This wakes the manager and tells it to follow its restart runbook ([`claude/README.md`](claude/README.md)).
 
-## Layout: one folder per agent tool
+## Commands
 
-| folder | tool | what |
-|---|---|---|
-| [`claude/`](claude/README.md) | Claude Code background sessions | `sm.py` + restart runbook |
-| [`codex/`](codex/README.md) | Codex threads on the app-server daemon | **experimental**: `csm.py` (status, dir, send, wake, restore) |
-| [`sm.py`](sm.py) | all tools | cross-tool `dir`, `send`, `wake`: any session reaches any other; `remote`: registry of Claude sessions on other machines |
-| [`docs/`](docs/README.md) | | design, verified facts, TODO |
+Any session can run these:
 
-Each tool folder has its own CLI, policy file (`fleet.json`, not in git) and runtime `state/` (not in
-git). They share the same verbs:
+```bash
+python3 <repo>/sm.py <command>
+```
 
-| verb | meaning |
+| command | what it does |
 |---|---|
-| `status` / `dir` | all sessions / live ones with their message address |
-| `restore` | after a restart, resume only the sessions that were mid-work; idle ones stay asleep |
-| `send NAME -m MSG` | message a live session, any tool |
-| `wake NAME -m MSG` | resume one stopped session with a task, on demand; never touches a live one |
-| `keep NAME pin\|default\|<hours>` | how long it may stay idle before it is stopped |
-| `tick` | periodic check: pins, idle stops, job-end warning |
-| `boot` | the user's one step after a restart: resume the manager |
+| `dir` | list live sessions (all tools, plus other machines) with their addresses |
+| `send NAME -m MSG` | message a live session here |
+| `wake NAME -m MSG` | start a stopped session here with a task. Never touches a live one |
+| `remote` | list the sessions on other machines |
+| `remote add NAME ADDR --host H` | add a session on another machine |
+| `remote rm NAME` | remove one |
+| `remote self` | print this session's own address, to give to other machines |
+
+Each tool has its own folder and CLI for the rest (restore, idle time, warnings):
+
+| folder | for | details |
+|---|---|---|
+| [`claude/`](claude/README.md) | Claude Code background sessions | `sm.py` and the restart runbook |
+| [`codex/`](codex/README.md) | Codex threads (experimental) | `csm.py` |
+| [`docs/`](docs/README.md) | | how it works, verified facts, TODO |
 
 ## Rules
 
-- **Wake on demand, not in bulk.** Restore only interrupted work. Everything else sleeps until a lead
-  or the user needs it. Every woken session costs usage.
-- **Never disturb a running session.** Don't restart, resume, stop or signal a live session unless the
-  user asks. Re-check liveness right before acting.
-- Sessions reach each other across tools with `python3 <repo>/sm.py dir|send|wake`
-  ([how](docs/current_plans/cross_tool_messaging.md)). Claude sessions on other machines are reached
-  only with `SendMessage` to their `bridge:session_…` address, kept by `sm.py remote`
-  ([how](docs/current_plans/cross_tool_messaging.md#claude-sessions-on-other-machines)).
+- **Wake on demand, not in bulk.** Restore only work that was cut off. Everything else sleeps until
+  someone needs it. Every woken session costs usage.
+- **Never disturb a running session.** Don't restart, resume or stop a live session unless the user
+  asks. Check that it is still live right before you act.
+- **Sessions on other machines** can only be reached with Claude's `SendMessage` tool, using their
+  `bridge:session_…` address. `sm.py` can't reach them ([why](docs/current_plans/cross_tool_messaging.md#claude-sessions-on-other-machines)).
 - The manager messages one session at a time. Each message starts with "You are `<name>`", stays
-  short (it lands in the session's context), lists only live peers if any, and ends with the
-  `sessions_md` line if one is set.
+  short, and ends with the `sessions_md` line if one is set.
 
 ## License
 

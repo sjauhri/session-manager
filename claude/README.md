@@ -1,103 +1,92 @@
 # session-manager / claude
 
-Keeps background Claude Code sessions running across host restarts. One background session named
-**`session-manager`** (pinned) runs `sm.py` from this folder. Shared conventions and setup:
-[`../README.md`](../README.md). Design and verified facts:
+Keeps background Claude Code sessions going across restarts. One pinned background session,
+**`session-manager`**, runs `sm.py` from this folder. Setup: [`../README.md`](../README.md). How it works:
 [`../docs/current_plans/claude_restart_workflow.md`](../docs/current_plans/claude_restart_workflow.md).
 
-## After the host restarts (your one step)
+## After a restart (your one step)
 
 ```bash
 python3 <repo>/claude/sm.py boot
 ```
 
-This resumes `session-manager` with the prompt "run the restart runbook". It does the rest and
-reports back. If the manager is already live, tell it "run the restart runbook".
+This wakes `session-manager` and tells it to run the restart runbook. It reports back when done. If
+the manager is already running, just tell it "run the restart runbook".
 
 ## Restart runbook (the manager follows this)
 
-1. `sm.py restore`. It resumes the sessions that died in the crash within the last 50 h:
-   - those the daemon marked **`failed`** (killed while running);
-   - **`blocked`** ones (waiting for your input) that died rather than being stopped. Each is told to
-     keep waiting unless it was waiting for this restart.
+1. **Restore.** Run `sm.py restore`. It resumes sessions that died in the last 50 h while:
+   - **working** (the daemon marked them `failed`), or
+   - **waiting for your answer** (`blocked`). These are told to keep waiting.
 
-   The daemon.log replay is not used to decide this, because a later small daemon restart can hide the
-   real crash. Each resumed session gets a short prompt: who it is, why it was resumed, its own note if
-   any, how to reach peers (`../sm.py dir|send|wake`), the remote peers' addresses (`../sm.py remote`),
-   plus the `sessions_md` line.
+   Each resumed session gets a short prompt: who it is, why it was woken, its own note if it left one,
+   how to reach other sessions (`../sm.py dir|send|wake`), the addresses of sessions on other
+   machines, and the `sessions_md` line.
 
-   Other sessions stay asleep. A `request` does not resume anyone. Instead:
-   - a failed session gets its own note back;
-   - a lead gets the list of asleep sub-sessions it asked for, and wakes them with `sm.py wake` when it
-     needs them.
-
-   Requests are then cleared. You wake a blocked session by replying to it. Live sessions are never
-   touched.
-2. Names survive a resume, so peers reach each other by name. `restore` itself sends a directory
-   message to any live session not reachable by name: who it is, its `uds:…` address, and the
-   `../sm.py dir` list. Nothing to do by hand.
-   If you use Codex, run `python3 <repo>/codex/csm.py restore`. It starts the Codex daemon if needed
-   and reloads only the threads whose turn the restart cut off ([`../codex/README.md`](../codex/README.md)).
-3. Job-end warning (only with `slurm_job_name` set). The `tick` output gives the minutes left.
-   - Arm one one-shot cron (CronCreate) for 45 min before the job ends. When it fires, send each live
-     session (one at a time, `../sm.py send`) this, and nothing longer:
+   All other sessions stay asleep. Notes left with `sm.py request` are handed out now: a session gets
+   its own note back, and a lead gets the list of sub-sessions it wants woken later. It wakes them
+   itself with `sm.py wake`. Then the notes are cleared. Live sessions are never touched.
+2. **Addresses.** Names survive a resume, so sessions find each other by name. `restore` also messages
+   any live session that can't be reached by name, with its address and the `../sm.py dir` list.
+   If you use Codex, run `python3 <repo>/codex/csm.py restore` ([details](../codex/README.md)).
+3. **Job-end warning** (only if `slurm_job_name` is set). `tick` shows the minutes left.
+   - Set one one-time cron (CronCreate) for 45 min before the job ends. When it fires, send each live
+     session, one at a time with `../sm.py send`, only this:
      "You are `<name>`. Job ends <HH:MM> (~45 min): write progress notes, start no long tool calls.
      Shells die, batch jobs survive. Want a sub-session woken after? `python3 <repo>/claude/sm.py request <name> -m "<task>"`"
-   - Arm a recurring `sm.py tick --apply` (every 60 min) only if `fleet.json` gives some session an
-     hours-based `keep`. Otherwise there is nothing to check, and each cron fire costs a manager turn.
-   - Crons don't survive a restart, so re-arm them every time.
-4. Remote peers (only if `../sm.py remote` lists any): your own address may have changed. Run
-   `../sm.py remote self`, then send each peer, one at a time, with `SendMessage` to its address:
+   - Set an hourly `sm.py tick --apply` cron only if `fleet.json` gives some session a number of hours.
+     Otherwise skip it: each run costs a manager turn.
+   - Crons die with the machine. Set them again after every restart.
+4. **Other machines** (only if `../sm.py remote` lists any). The manager's own address may have
+   changed. Run `../sm.py remote self`. Then send each remote session, one at a time, with `SendMessage`
+   to its address:
    "You are `<name>`. `<manager>` is now at `bridge:session_…`: send `register` lines there.
-   Sessions here: `<name>` bridge:session_…; …" (live ones, from the last column of `../sm.py dir`).
-   Peers left offline get it when their machine reconnects. Sessions here learn the remote peers from
-   their restart prompt.
-5. Report to the user what was resumed (Claude and Codex), what failed, and the job end time. List the
-   sessions left asleep in one line.
+   Sessions here: `<name>` bridge:session_…; …" (live ones; addresses are the last column of `../sm.py dir`).
+   Offline ones get it when their machine reconnects.
+5. **Report** to the user: what was resumed (Claude and Codex), what failed, and when the job ends.
+   List the sessions left asleep in one line.
 
 ## Commands
 
-`python3 <repo>/claude/sm.py <cmd>`. Any session may run `dir`, `send` and `wake`.
-Sessions normally use the cross-tool [`../sm.py`](../sm.py) `dir|send|wake`, which also reaches Codex.
+`python3 <repo>/claude/sm.py <command>`. Sessions usually use the top-level [`../sm.py`](../sm.py)
+instead, which also reaches Codex and other machines.
 
-| cmd | what it does |
+| command | what it does |
 |---|---|
-| `status` | every session: LIVE/STOPPED, busy/idle/shell, state, policy |
-| `dir [--json]` | live sessions: name, id, `uds:` address, cwd |
-| `lost` | what `restore` would resume, and the requested sessions it leaves asleep |
-| `restore [--dry-run]` | resume the sessions that died mid-work, each with a restart prompt |
-| `request NAME [-m WHY] [--by X]` | one-shot note for the next restore: NAME's own reminder (if it fails) or a lead's "wake this one later" list |
-| `wake NAME [-m MSG]` | resume one stopped session with MSG as its task |
-| `send NAME -m MSG` | write MSG into a live session's message socket (works from any shell) |
-| `keep NAME pin\|default\|<hours>` | idle policy (see below) |
-| `tick [--apply]` | snapshot, pins, idle stops, job-end warning |
-| `check-names` | live sessions not reachable by name |
-| `boot` | resume the manager after a restart |
+| `status` | every session: live or stopped, busy or idle, state, idle policy |
+| `dir [--json]` | live sessions: name, short id, status, `uds:` address, folder |
+| `lost` | what `restore` would resume, and what it would leave asleep |
+| `restore [--dry-run]` | resume sessions that died mid-work |
+| `request NAME [-m WHY] [--by X]` | leave a note for the next restore (see step 1) |
+| `wake NAME [-m MSG]` | start one stopped session with MSG as its task |
+| `send NAME -m MSG` | message a live session |
+| `keep NAME pin\|default\|<hours>` | how long it may stay idle (below) |
+| `tick [--apply]` | save a snapshot, check pins and idle time, warn before the job ends |
+| `check-names` | live sessions that can't be reached by name |
+| `boot` | wake the manager after a restart |
 
-**How long sessions stay awake** (`keep`). The daemon stops an idle session after 8 h. This is
-hardcoded, and no setting changes it.
-- `pin`: never idle-stopped. `sm.py` writes `~/.claude/jobs/pins.json`, the same file Ctrl+T writes.
-- `<hours>`: `tick --apply` stops the session sooner. It only stops sessions that are idle and done,
-  with no background tasks or monitors.
+**Idle time (`keep`).** Claude stops an idle session after 8 h. This is fixed; no setting changes it.
+- `pin`: never stopped for being idle. Same as Ctrl+T in agent view (`~/.claude/jobs/pins.json`).
+- `<hours>`: `tick --apply` stops it sooner, but only if it is idle and has no background tasks.
 - `default`: 8 h.
 
-**Rules.** Never respawn or resume a live session: a respawn would lose its shells, and `--resume`
-would start a copy. `sm.py` re-checks liveness before every resume. Never run `claude respawn --all`.
+**Rules.** Never resume or respawn a live session: a resume starts a second copy, and a respawn loses
+its shells. `sm.py` checks liveness before every resume. Never run `claude respawn --all`.
 `restore` skips sessions with `"restore": "never"` in `fleet.json`.
 
 ## Reading transcripts
 
-The manager can tell what any session did, even a stopped one, without waking it:
-- Transcripts are stored at `~/.claude/projects/<cwd with / and . as ->/<session-id>.jsonl`, with
-  subagents in `<id>/subagents/`.
-- A fork inherits history up to its "forked here" marker. Its real instructions are often in peer
-  messages.
-- Before waking a session, read its last turns so your message picks up where it stopped.
+The manager can see what any session did without waking it:
+- Transcripts are in `~/.claude/projects/<folder, with / and . turned into ->/<session-id>.jsonl`.
+  Subagents are in `<id>/subagents/`.
+- A forked session shares history up to its "forked here" marker. Its real task is often in messages
+  from other sessions.
+- Before waking a session, read its last turns, so your message continues where it stopped.
 
 ## Files
 
 | file | what it is |
 |---|---|
 | `sm.py` | the CLI above |
-| `fleet.json` | per-session policy keyed by short id: `keep`, `restore`. Written by `keep`. Not in git. |
-| `state/` | `events.log` (resumes, pins, idle stops), `snapshot.json` (last `tick`), `resume_requests.json`. Not in git. |
+| `fleet.json` | per-session policy (`keep`, `restore`), by short id. Written by `keep`. Not in git |
+| `state/` | `events.log`, `snapshot.json` (last `tick`), `resume_requests.json`. Not in git |

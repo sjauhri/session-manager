@@ -1,102 +1,107 @@
-# Cross-tool messaging: Claude Code ↔ Codex
+# Messaging between sessions
 
-How any session (Claude or Codex) finds, messages and wakes any other, through the top-level
-[`sm.py`](../../sm.py). Verified 2026-10-19 on Claude Code 2.1.303 and codex-cli 0.163.0, on throwaway
-sessions only. The Codex side is experimental: it uses `codex app-server`, which Codex marks
-`[experimental]` ([status](../../codex/README.md)).
+How sessions find, message and wake each other: Claude and Codex on this machine through
+[`sm.py`](../../sm.py), and Claude sessions on other machines through Claude's `SendMessage` tool.
+
+Tested 2026-10-19 (Claude Code 2.1.303, codex-cli 0.163.0) and 2026-10-29 for other machines
+(Claude Code 2.1.312). The Codex side is experimental ([status](../../codex/README.md)).
 
 ## Why each tool's own channel
 
-Compared on 2026-10-19. There is no standard, and neither tool implements A2A.
+There is no standard way for these tools to talk. Neither supports A2A. Compared on 2026-10-19:
 
-| option | why not (here) |
+| option | why we did not use it |
 |---|---|
-| Shared MCP mailbox ([mcp_agent_mail](https://github.com/Dicklesworthstone/mcp_agent_mail_rust), agent-talk, amq) | pull-only, so an idle or stopped session never sees mail; its server dies with the job |
-| Agent managers (Claude Squad, Conductor, herdr, tmux-orche) | they type into terminal panes; these Claude sessions are `claude --bg` daemon sessions, not panes |
-| One CLI as the other's MCP tool (`codex mcp-server`, codex-as-mcp) | one-off delegation, not peers |
-| **Native channels (chosen)** | both ways, reaches idle sessions, no extra server, no change to how sessions start |
+| Shared mailbox server ([mcp_agent_mail](https://github.com/Dicklesworthstone/mcp_agent_mail_rust), agent-talk, amq) | sessions must poll for mail, so an idle or stopped session never sees it. The server also dies with the job |
+| Agent managers (Claude Squad, Conductor, herdr, tmux-orche) | they type into terminal windows. Our sessions are background sessions with no window |
+| One tool as the other's MCP tool (`codex mcp-server`) | good for one-off help, not for equal peers |
+| **Each tool's own channel (chosen)** | works both ways, reaches idle sessions, needs no extra server |
 
-A shared mailbox is worth adding only if threaded history or file leases between agents are needed.
+## How a message gets there (same machine)
 
-## How a message travels
-
-| from → to | path |
+| to | how |
 |---|---|
-| anyone → Claude | `sm.py send` writes two JSON lines into the session's `messagingSocketPath`: `{"type":"auth","token":<peerToken>}`, then `{"type":"user","msg_id","uuid","message":{"role":"user","content":…},"priority":"next"}`. The token is in `~/.claude/sessions/<pid>.<sha256(socket path)>.key` (mode 600, `procStart` must match). An idle session starts a turn; Claude labels it "Another Claude session sent a message". |
-| anyone → Codex | `codex queue --thread <uuid> --message …` puts it in the daemon queue (`~/.codex/queue_1.sqlite`). A loaded idle thread runs it at once; a busy one runs it after its current turn. |
-| wake Claude | `claude --bg --resume` (see [claude_restart_workflow.md](claude_restart_workflow.md)) |
-| wake Codex | queue the message, then `thread/resume` over the app-server socket: the thread loads and drains its queue. A queued message alone waits until something loads the thread. |
+| a live Claude session | `sm.py send` connects to the session's socket (`messagingSocketPath`). It sends a token line, then the message. The token is in `~/.claude/sessions/<pid>.<sha256(socket path)>.key`. An idle session starts a turn right away |
+| a live Codex thread | `codex queue --thread <uuid> --message …`. An idle thread runs it now; a busy one after its current turn |
+| a stopped Claude session | `claude --bg --resume <id> "<message>"` ([details](claude_restart_workflow.md)) |
+| a stopped Codex thread | queue the message, then load the thread (`thread/resume`). It then runs the queue |
 
-Every message gets a one-line header: `[from \`<sender>\`; reply: python3 …/sm.py send <sender> -m "..."]`.
-It is kept short because it lands in the receiver's context. The sender comes from `CLAUDE_JOB_DIR`
-(Claude) or `CODEX_THREAD_ID` (Codex), or `--from`. Tested: a Codex thread used the reply line by itself.
-
-## Codex app-server facts
-
-- Control socket `~/.codex/app-server-control/app-server-control.sock` speaks JSON-RPC 2.0 over
-  **WebSocket** (`codex app-server proxy` passes raw bytes, so a plain JSON-lines client hangs).
-  `codex/csm.py` has a stdlib client. Schema: `codex app-server generate-json-schema --out DIR`.
-- `thread/list` returns interactive sources only unless `sourceKinds` is set; `thread/loaded/list` =
-  live threads. Status: `notLoaded`, `idle`, `active`, `systemError`.
-- `codex queue --thread <name>` fails for a thread with no turns yet; `csm.py` always passes the uuid.
-- `thread/unsubscribe` does not unload a thread; only a daemon restart does.
-
-## The Codex sandbox
-
-Codex runs shell commands in a sandbox that hides other processes (`/proc`) and blocks unix-socket
-`connect()`, so from inside Codex every session looks stopped and no socket is reachable.
-[`codex/session-manager.rules.in`](../../codex/session-manager.rules.in), installed by `csm.py install-rules`, fixes this:
-
-- `sm.py dir` and `sm.py send`: `allow` (run outside the sandbox, no prompt).
-- `sm.py wake`: `prompt`, because it starts a stopped session and costs usage, so the user approves each one.
-- Nothing else in `session-manager/` matches.
-
-Install is the user's call (global: every Codex thread gets it). `install-rules` writes a copy, because
-the daemon loaded 0 files from a symlink. Rules load when a thread starts. An older thread gets a clear error
-from `sm.py` instead of a false "stopped".
-
-## Codex restore after a host restart
-
-The Codex daemon (and the VS Code extension's app-server) run on the host and die with it. Verified by
-killing a private `codex app-server --listen unix://…` mid-turn (2026-10-20):
-
-- the rollout's last turn has `task_started` and no `task_complete` / `turn_aborted`;
-- the API then reports that turn `interrupted` with no error, the same as Esc, so `csm.py lost` reads the
-  rollout instead;
-- `csm.py restore` reloaded the thread with a restart prompt; it re-ran the cut-off command and finished,
-  and `lost` was empty afterwards (no repeat restores).
-
-A thread open in any client holds a flock on `~/.codex/thread-writer-locks/<uuid>.lock`; restore skips
-those and re-checks right before loading, so it never opens a thread twice.
+Every message starts with one short line: who sent it and the command to reply. The sender is found
+from `CLAUDE_JOB_DIR` (Claude) or `CODEX_THREAD_ID` (Codex), or given with `--from`.
 
 ## Claude sessions on other machines
 
-Verified 2026-10-29 between two clusters (Claude Code 2.1.312), both ways. Needs Remote Control
-on both sides (`remoteControlAtStartup: true` in each machine's `~/.claude/settings.json`, or
-`/remote-control`) and a claude.ai login.
+Claude sessions on different computers or clusters can message each other. Tested both ways between
+two clusters on 2026-10-29.
 
-- Only a live Claude session can send: the `SendMessage` tool, relayed by Anthropic's servers. No CLI
-  or public API exists, so `sm.py` can't, and Codex can't. The CLI uses an internal endpoint
-  (`/v1/code/sessions/<id>/events`, signed events); not worth depending on.
-- Other machines list a session by its **claude.ai title**, not its local name. Unnamed ones get
-  `<hostname>-<words>`. An old offline session can keep a title the live one also had: a send to it
-  just queues.
-- The reliable address is `bridge:session_<id>`: the session's `$CLAUDE_CODE_BRIDGE_SESSION_ID`, the
-  id in its claude.ai/code URL, and the `from` of any message it sends.
-- An offline target queues until its machine reconnects. Nothing can wake it from here.
+**What you need**
+- Both machines logged in to the **same** claude.ai account. Messages don't cross accounts.
+- Remote Control on in each session. Set `"remoteControlAtStartup": true` in `~/.claude/settings.json`
+  on each machine so every new or woken session gets it. A session that is already running needs
+  `/remote-control` typed into it.
 
-Registry: the manager keeps `state/remote.json` (`sm.py remote add|rm`); `sm.py dir` lists the
-entries as tool `remote` with the host and address; its last column is every session's bridge
-address (local ones from `bridgeSessionId` in `~/.claude/sessions/<pid>.json`). Any local Claude
-session can send with `SendMessage` to a remote address, and the restart prompt lists the remote
-peers, so every resumed session knows them. `sm.py send` to a remote name prints that address and exits.
-To register a session on another machine, paste into it (the manager's address comes from
-`sm.py remote self`, run in the manager):
+**How it works**
+- Only a running Claude session can send, using its `SendMessage` tool. Anthropic's servers carry the
+  message. There is no command line or public API for this, so `sm.py` and Codex cannot send. (The
+  tool uses an internal endpoint, `/v1/code/sessions/<id>/events`. We don't call it directly.)
+- Each session has an address: `bridge:session_<id>`. It is the same id as in the session's
+  claude.ai/code URL and in `$CLAUDE_CODE_BRIDGE_SESSION_ID`. Always use this address.
+- Don't send by name across machines. The other machine sees the session's claude.ai title, not its
+  local name, and an old offline session can still hold the same title.
+- If the other session is offline, the message waits until its machine reconnects. Nothing here can
+  wake it.
+- Switching accounts gives every session a new address. Old addresses stop working, and running
+  sessions lose Remote Control until you type `/remote-control` in them.
 
-> Send SendMessage to `bridge:session_<manager id>`: "register <your name> host=<hostname>
-> addr=bridge:$CLAUDE_CODE_BRIDGE_SESSION_ID" (fill in the values). Send it again after you are resumed.
+**The registry**
 
-The manager then runs `sm.py remote add <name> <addr> --host <host>`.
+The manager keeps a list of sessions on other machines in `state/remote.json` (not in git).
+- `sm.py remote` lists them. `sm.py dir` lists them too, and its last column gives every session's
+  address, local ones included.
+- When a session here is resumed, its restart prompt lists these addresses, so it can message them.
+- `sm.py send` to a remote name does not send. It prints the address to use with `SendMessage`.
+
+**Add a session on another machine**
+1. In the manager, run `python3 <repo>/sm.py remote self`. Copy the manager's address.
+2. Paste this into the session on the other machine (fill in the manager's address):
+   > Use SendMessage to `bridge:session_<manager id>` with: "register <your name>
+   > host=<hostname> addr=bridge:$CLAUDE_CODE_BRIDGE_SESSION_ID" (fill in the values).
+   > Send it again after you are restarted.
+3. The manager receives the line and runs `sm.py remote add <name> <addr> --host <host>`.
+
+## Codex app-server facts
+
+- The daemon's socket is `~/.codex/app-server-control/app-server-control.sock`. It speaks JSON-RPC
+  over **WebSocket**, not plain JSON lines. `codex/csm.py` has a small client.
+- `thread/list` shows only interactive threads unless `sourceKinds` is set. `thread/loaded/list`
+  shows live threads. Status values: `notLoaded`, `idle`, `active`, `systemError`.
+- `codex queue --thread <name>` fails for a thread with no turns yet, so `csm.py` always uses the id.
+- `thread/unsubscribe` does not unload a thread. Only a daemon restart does.
+
+## The Codex sandbox
+
+Codex runs commands in a sandbox. Inside it, other processes are hidden and sockets can't be opened,
+so every session looks stopped. [`codex/session-manager.rules.in`](../../codex/session-manager.rules.in)
+(installed by `csm.py install-rules`) fixes this:
+
+- `sm.py dir` and `sm.py send` run outside the sandbox, with no prompt.
+- `sm.py wake` asks the user first, because a woken session costs usage.
+- Nothing else is allowed.
+
+The rule applies to every Codex thread, so installing it is the user's choice. It is copied, not
+linked, because Codex ignores linked rule files. Threads load rules when they start.
+
+## Codex restore after a restart
+
+The Codex daemon dies with the machine. Tested by killing it mid-turn (2026-10-20):
+
+- The cut-off turn has `task_started` in its log file but no end event.
+- The API reports that turn the same as one you stopped with Esc. So `csm.py lost` reads the log file
+  instead.
+- `csm.py restore` reloaded the thread. It re-ran the cut-off command and finished.
+
+A thread that is open somewhere holds a lock file (`~/.codex/thread-writer-locks/<uuid>.lock`).
+Restore skips those, so it never opens a thread twice.
 
 ## Open
 
