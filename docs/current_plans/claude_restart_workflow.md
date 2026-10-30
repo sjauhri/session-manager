@@ -31,8 +31,10 @@ relies on. Facts were tested on Claude Code 2.1.303 (2026-10-19) unless marked.
 - **Resume:** `claude --bg --resume <uuid> "<prompt>"` on a stopped session keeps its id, name and
   model, and runs the prompt as a normal turn. It must run in the session's own folder.
   - On a live session it starts a second copy. So `sm.py` checks liveness right before every resume.
-  - Remote Control: a resumed session connects on its own if `remoteControlAtStartup` is true. Seen
-    working before an account switch on 2026-10-29; not yet re-checked after it.
+  - Remote Control: a resumed session connects on its own if `remoteControlAtStartup` is true, and
+    keeps its `bridge:session_…` address. Checked on a real restart, 2026-10-30 (11 sessions).
+  - An account switch gives every session a new address and drops Remote Control until
+    `/remote-control` is typed in it.
 - **Pins:** `~/.claude/jobs/pins.json`, a list of short ids. `sm.py` uses the same lock as Claude.
   Agent view shows pinned sessions with "Pinned".
 - **Stop:** `claude stop <id>` logs `settled <id> (killed)`.

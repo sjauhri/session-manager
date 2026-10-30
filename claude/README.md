@@ -38,8 +38,9 @@ the manager is already running, just tell it "run the restart runbook".
    - Set an hourly `sm.py tick --apply` cron only if `fleet.json` gives some session a number of hours.
      Otherwise skip it: each run costs a manager turn.
    - Crons die with the machine. Set them again after every restart.
-4. **Other machines** (only if `../sm.py remote` lists any). The manager's own address may have
-   changed. Run `../sm.py remote self`. Then send each remote session, one at a time, with `SendMessage`
+4. **Other machines** (only if `../sm.py remote` lists any). Run `../sm.py remote self`. A resumed
+   session keeps its address, so usually nothing changed: skip this step. Only if the address differs
+   (e.g. after an account switch), send each remote session, one at a time, with `SendMessage`
    to its address:
    "You are `<name>`. `<manager>` is now at `bridge:session_…`: send `register` lines there.
    Sessions here: `<name>` bridge:session_…; …" (live ones; addresses are the last column of `../sm.py dir`).
