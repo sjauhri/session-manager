@@ -15,17 +15,18 @@ the manager is already running, just tell it "run the restart runbook".
 
 ## Restart runbook (the manager follows this)
 
-1. **Restore.** Run `sm.py restore`. It resumes sessions that died in the last 50 h while:
-   - **working** (the daemon marked them `failed`), or
-   - **waiting for your answer** (`blocked`). These are told to keep waiting.
+1. **Restore.** Run `sm.py restore`. It resumes sessions that:
+   - died in the last 50 h while **working** (the daemon marked them `failed`),
+   - died in the last 50 h while **waiting for your answer** (`blocked`). These are told to keep waiting, or
+   - **asked to be woken** (`sm.py request`, filed by the session itself or by you).
 
    Each resumed session gets a short prompt: who it is, why it was woken, its own note if it left one,
    how to reach other sessions (`../sm.py dir|send|wake`), the addresses of sessions on other
    machines, and the `sessions_md` line.
 
-   All other sessions stay asleep. Notes left with `sm.py request` are handed out now: a session gets
-   its own note back, and a lead gets the list of sub-sessions it wants woken later. It wakes them
-   itself with `sm.py wake`. Then the notes are cleared. Live sessions are never touched.
+   All other sessions stay asleep. A request a lead filed for a sub-session does not wake it: the lead
+   gets the list in its prompt and wakes them with `sm.py wake` when needed. Then all requests are
+   cleared. Live sessions are never touched.
 2. **Addresses.** Names survive a resume, so sessions find each other by name. `restore` also messages
    any live session that can't be reached by name, with its address and the `../sm.py dir` list.
    If you use Codex, run `python3 <repo>/codex/csm.py restore` ([details](../codex/README.md)).
@@ -57,7 +58,7 @@ instead, which also reaches Codex and other machines.
 | `dir [--json]` | live sessions: name, short id, status, `uds:` address, folder |
 | `lost` | what `restore` would resume, and what it would leave asleep |
 | `restore [--dry-run]` | resume sessions that died mid-work |
-| `request NAME [-m WHY] [--by X]` | leave a note for the next restore (see step 1) |
+| `request NAME [-m WHY] [--by X]` | ask for NAME to be woken at the next restore, with WHY as its note (see step 1) |
 | `wake NAME [-m MSG]` | start one stopped session with MSG as its task |
 | `send NAME -m MSG` | message a live session |
 | `keep NAME pin\|default\|<hours>` | how long it may stay idle (below) |

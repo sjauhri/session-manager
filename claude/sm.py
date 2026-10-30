@@ -4,7 +4,8 @@
     sm.py [status]               every session: LIVE/STOPPED, busy/idle, policy, name
     sm.py dir [--json]           live sessions: name, id, message address (any session may run this)
     sm.py lost                   sessions that were WORKING when the last job/daemon died, and are still down
-    sm.py request NAME [-m WHY]  note that NAME should be woken after the restart: restore tells the requester (one-shot)
+    sm.py request NAME [-m WHY]  NAME should be woken after the restart (one-shot): restore wakes it if NAME or the user
+                                 asked; a lead's request goes into the lead's prompt instead
     sm.py restore [--dry-run]    resume `lost`, each with a restart prompt; idle/blocked ones stay asleep
     sm.py wake NAME [-m MSG]     resume one stopped session (a lead waking its sub-session when it needs it)
     sm.py send NAME -m MSG       message a live session from any shell (cross-tool: ../sm.py send)
@@ -373,17 +374,20 @@ def blocked_at_crash(sid, log_lines):
 
 def plan_restore(ag, lv, fleet):
     """(when, to resume, asleep requests): resume = sessions the daemon marked `failed` within FAILED_WINDOW_H,
-    plus `blocked` (needs input) ones that died rather than being stopped, still down. Everything else stays asleep; leads wake their sub-sessions when they need them.
+    plus `blocked` (needs input) ones that died rather than being stopped, plus sessions that asked to be woken
+    (`request` by themselves or the user), still down. Everything else stays asleep; leads wake their sub-sessions when they need them.
     (The daemon.log replay is not used to decide: a later small daemon restart hid the real crash.)"""
     now = time.time()
     ok = lambda s: s not in lv and fleet["sessions"].get(s, {}).get("restore") != "never"
     log_lines = open(f"{CLAUDE}/daemon.log", errors="replace").read().splitlines()
     recent = lambda t: (t or 0) > now - FAILED_WINDOW_H * 3600
-    down = sorted((s for s in ag if ok(s) and (recent(failed_at(s)) or recent(blocked_at_crash(s, log_lines)))),
+    req = load_requests()
+    asked = lambda s: req.get(s, {}).get("by") in (s, name(s, ag), "the user")
+    down = sorted((s for s in ag if ok(s) and (recent(failed_at(s)) or recent(blocked_at_crash(s, log_lines)) or asked(s))),
                   key=lambda s: name(s, ag))
     when = max((failed_at(s) for s in down if failed_at(s)), default=None)
     when = datetime.fromtimestamp(when, timezone.utc).isoformat(timespec="seconds") if when else None
-    asleep = [s for s in sorted(load_requests()) if s in ag and s not in down and s not in lv]
+    asleep = [s for s in sorted(req) if s in ag and s not in down and s not in lv]
     return when, down, asleep
 
 
@@ -396,7 +400,7 @@ def cmd_lost(a):
     req = load_requests()
     for s in asleep:
         by = req[s].get("by")
-        to = "asked for itself -> reported to the user" if by in (s, name(s, ag)) else f"asked by {by} -> in its prompt"
+        to = "restore: never -> reported to the user" if by in (s, name(s, ag), "the user") else f"asked by {by} -> in its prompt"
         print(f"asleep, {to}  {s}  {name(s, ag)}")
 
 
@@ -408,13 +412,16 @@ def cmd_restore(a):
     req = load_requests()
 
     def why(s):
-        if job_state(s).get("state") == "blocked":
+        st = job_state(s).get("state")
+        if st == "blocked":
             msg = (f"Host restarted while you waited for the user ({job_state(s).get('detail') or 'see your last message'}). "
                    "Keep waiting, unless you were waiting for this restart.")
-        else:
+        elif st == "failed":
             msg = "Host restarted while you were running."
+        else:
+            msg = "Host restarted. You asked to be woken after it."
         own = req.get(s)
-        if own and own.get("why") and own.get("by") in (s, name(s, ag)):
+        if own and own.get("why") and own.get("by") in (s, name(s, ag), "the user"):
             msg += f" Your note: {own['why']}."
         mine = [x for x in asleep if req[x].get("by") == name(s, ag)]
         if mine:
@@ -422,8 +429,8 @@ def cmd_restore(a):
                     "; ".join(f"`{name(x, ag)}` ({req[x].get('why') or '-'})" for x in mine) + ".")
         return msg
     ok = [s for s in down if resume(s, ag, restart_prompt(s, ag, why(s)), a.dry_run)]
-    for x in asleep:  # a self-request from a session left asleep reaches no one: the manager reports it
-        if req[x].get("by") in (x, name(x, ag)):
+    for x in asleep:  # a self-request left asleep (restore: never) reaches no one: the manager reports it
+        if req[x].get("by") in (x, name(x, ag), "the user"):
             print(f"  ASLEEP, asked to be resumed: {name(x, ag)} ({req[x].get('why')}) -> report to the user")
     if a.dry_run:
         for s in down:

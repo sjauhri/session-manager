@@ -17,7 +17,7 @@ relies on. Facts were tested on Claude Code 2.1.303 (2026-10-19) unless marked.
 
 | goal | how |
 |---|---|
-| 1. Resume sessions that were working | `restore` reads each session's state. It resumes `failed` ones (killed while working) and `blocked` ones that died (waiting for the user), from the last 50 h. Idle sessions stay asleep. A session can leave a note with `sm.py request`; `restore` hands it back once. |
+| 1. Resume sessions that were working | `restore` reads each session's state. It resumes `failed` ones (killed while working) and `blocked` ones that died (waiting for the user), from the last 50 h. A session that asked to be woken (`sm.py request`, by itself or the user) is resumed too, with its note. Other idle sessions stay asleep. |
 | 2. Start sub-sessions when needed | Not at restore. A lead runs `sm.py wake <name> -m "<task>"` when it needs one. (Waking a whole list at restore was tried and dropped: it cost usage for nothing.) |
 | 3. Sessions know each other's addresses | Names survive a resume, so `SendMessage` by name works. `sm.py dir` lists live addresses. `restore` messages any session that can't be reached by name. Sessions on other machines are listed in the restart prompt ([how](cross_tool_messaging.md#claude-sessions-on-other-machines)). |
 | 4. Sessions wake their own sub-sessions | `sm.py wake <name> -m "<task>"`. The top-level `sm.py` does this for Codex too. |
