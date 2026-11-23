@@ -25,6 +25,9 @@ Facts this relies on (verified on 2.1.303, see ../docs/current_plans/claude_rest
 - `claude --bg --resume <uuid> "<prompt>"` wakes a STOPPED session with its saved name and model,
   same id, and delivers the prompt. On a LIVE session it would start a copy: every resume here
   re-checks liveness first and refuses live targets.
+- Two hosts sharing ~/.claude (NFS) each run a daemon. live() and message sockets are per host, so a session
+  running on the other host looks STOPPED here, and `--resume` on it starts a COPY with a new id. `status` shows
+  those as OTHERHOST; wake/restore refuse them unless --other-host-ok (that host is dead). Seen 2026-11-23, 2.1.330.
 - The daemon idle-stops a session after 8 h (bridged sessions; hardcoded). Pinned sessions
   (~/.claude/jobs/pins.json) are exempt.
 """
@@ -110,6 +113,57 @@ def live():
             continue
         if rec.get("kind") == "bg" and not rec.get("spare") and rec.get("jobId"):
             out[rec["jobId"]] = rec
+    return out
+
+
+def machine_id():
+    try:
+        return open("/etc/machine-id").read().strip()
+    except OSError:
+        return ""
+
+
+OTHER_HOST_H = 6  # a session active on another host this recently may still be running there
+
+
+def elsewhere(hours=OTHER_HOST_H):
+    """short id -> record, for sessions whose newest record is from ANOTHER machine and whose job was active in the
+    last `hours`. live() can't see those pids, and their message sockets are in that host's /tmp. `claude --bg
+    --resume` on one of them starts a COPY with a new id (seen 2026-11-23: two hosts, one shared ~/.claude)."""
+    me, newest = machine_id(), {}
+    d = f"{CLAUDE}/sessions"
+    for f in os.listdir(d):
+        if not re.fullmatch(r"\d+\.json", f):
+            continue
+        try:
+            rec = json.load(open(os.path.join(d, f)))
+        except (OSError, ValueError):
+            continue
+        j = rec.get("jobId")
+        if rec.get("kind") == "bg" and j and rec.get("startedAt", 0) >= newest.get(j, {}).get("startedAt", 0):
+            newest[j] = rec
+    out, cutoff = {}, time.time() - hours * 3600
+    for j, rec in newest.items():
+        host = (rec.get("pidDomain") or "").split(":")[1:2]
+        if not host or host[0] == me:
+            continue
+        try:
+            active = os.path.getmtime(f"{CLAUDE}/jobs/{j}/state.json")
+        except OSError:
+            active = (rec.get("updatedAt") or rec.get("startedAt") or 0) / 1000
+        if active >= cutoff:
+            out[j] = rec
+    return out
+
+
+def copies_of(sid, since):
+    """Short ids of sessions created after `since` (epoch s) whose first prompt names session `sid` as theirs."""
+    out = []
+    for j in os.listdir(f"{CLAUDE}/jobs"):
+        st = job_state(j)
+        if j != sid and sid in (st.get("intent") or "")[:200] and st.get("createdAt", "") >= \
+                datetime.fromtimestamp(since, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"):
+            out.append(j)
     return out
 
 
@@ -210,14 +264,22 @@ def name(sid, ag):
 
 # ---------- actions ----------
 
-def resume(sid, ag, prompt, dry=False):
-    """Resume a STOPPED session with a prompt. Refuses live ones. Returns True once it is live."""
+def resume(sid, ag, prompt, dry=False, other_host_ok=False):
+    """Resume a STOPPED session with a prompt. Refuses live ones, here or (unless other_host_ok) on another host.
+    Returns True once it is live. Never retry a False: if the CLI started a copy instead, this says so."""
     if sid in live():
         print(f"  live already, not touched: {name(sid, ag)}")
         return True
+    if not other_host_ok and sid in elsewhere():
+        print(f"  REFUSED {sid} {name(sid, ag)}: active on another host in the last {OTHER_HOST_H} h; resuming it "
+              "here would start a copy. Message it with SendMessage to its bridge address (sm.py dir on that host).",
+              file=sys.stderr)
+        log(f"resume REFUSED {sid} {name(sid, ag)} (other host) by {caller()}")
+        return False
     print(f"  resume {sid}  {name(sid, ag)}")
     if dry:
         return True
+    t0 = time.time()
     r = subprocess.run(["claude", "--bg", "--resume", ag[sid]["sessionId"], prompt],
                        capture_output=True, text=True, timeout=180, cwd=ag[sid].get("cwd") or None)
     if r.returncode:
@@ -226,8 +288,14 @@ def resume(sid, ag, prompt, dry=False):
         if sid in live():
             log(f"resumed {sid} {name(sid, ag)} by {caller()}")
             return True
+        cp = copies_of(ag[sid]["sessionId"], t0 - 5)
+        if cp:
+            print(f"  COPY STARTED, not resumed: {sid} {name(sid, ag)} is running elsewhere; the CLI started "
+                  f"{', '.join(cp)}. Do NOT wake again. Stop the copy or use it.", file=sys.stderr)
+            log(f"resume COPIED {sid} {name(sid, ag)} -> {','.join(cp)} by {caller()}")
+            return False
         time.sleep(1.5)
-    print(f"  STILL STOPPED: {sid} {name(sid, ag)}", file=sys.stderr)
+    print(f"  STILL STOPPED: {sid} {name(sid, ag)}. Do not retry: check `sm.py status` first.", file=sys.stderr)
     log(f"resume FAILED {sid} {name(sid, ag)}")
     return False
 
@@ -317,12 +385,12 @@ def sync_pins(fleet):
 # ---------- commands ----------
 
 def cmd_status(a):
-    ag, lv, fleet = agents(), live(), load_fleet()
-    for sid in sorted(ag, key=lambda i: (i not in lv, ag[i].get("name") or "")):
+    ag, lv, fleet, el = agents(), live(), load_fleet(), elsewhere()
+    for sid in sorted(ag, key=lambda i: (i not in lv, i not in el, ag[i].get("name") or "")):
         rec, pol = lv.get(sid), fleet["sessions"].get(sid, {})
         flags = " ".join(filter(None, [f"keep={pol['keep']}" if pol.get("keep", "default") != "default" else "",
                                         "restore=never" if pol.get("restore") == "never" else ""]))
-        print(f"{'LIVE   ' if rec else 'STOPPED'} {sid}  {(rec or {}).get('status', '-'):5} {ag[sid].get('state') or '-':8} "
+        print(f"{'LIVE   ' if rec else 'OTHERHOST' if sid in el else 'STOPPED'} {sid}  {(rec or {}).get('status', '-'):5} {ag[sid].get('state') or '-':8} "
               f"{ag[sid].get('name')}  {flags}")
 
 
@@ -428,7 +496,7 @@ def cmd_restore(a):
             msg += (" Asleep, wake when needed: " +
                     "; ".join(f"`{name(x, ag)}` ({req[x].get('why') or '-'})" for x in mine) + ".")
         return msg
-    ok = [s for s in down if resume(s, ag, restart_prompt(s, ag, why(s)), a.dry_run)]
+    ok = [s for s in down if resume(s, ag, restart_prompt(s, ag, why(s)), a.dry_run, a.other_host_ok)]
     for x in asleep:  # a self-request left asleep (restore: never) reaches no one: the manager reports it
         if req[x].get("by") in (x, name(x, ag), "the user"):
             print(f"  ASLEEP, asked to be resumed: {name(x, ag)} ({req[x].get('why')}) -> report to the user")
@@ -463,7 +531,7 @@ def cmd_wake(a):
         return
     msg = a.message or "Wait for my message."
     why = f"`{name(me, ag) if me else 'the user'}` woke you: {msg}"
-    if not resume(sid, ag, restart_prompt(sid, ag, why), a.dry_run):
+    if not resume(sid, ag, restart_prompt(sid, ag, why), a.dry_run, a.other_host_ok):
         sys.exit(1)
     rec = live().get(sid)
     if rec:
@@ -555,6 +623,9 @@ def cmd_boot(a):
     if sid in live():
         print(f"{MANAGER} is live: tell it \"run the restart runbook\".")
         return
+    if sid in elsewhere():
+        sys.exit(f"{MANAGER} was active on another host in the last {OTHER_HOST_H} h: resuming it here would start a "
+                 "copy. Use it there, or wait until that host is gone.")
     print(f"resume {sid}  {MANAGER}")
     r = subprocess.run(["claude", "--bg", "--resume", ag[sid]["sessionId"], go],
                        capture_output=True, text=True, timeout=180, cwd=ag[sid].get("cwd") or None)
@@ -591,7 +662,9 @@ def main():
     sub.add_parser("lost")
     q = sub.add_parser("request"); q.add_argument("name"); q.add_argument("-m", "--message"); q.add_argument("--by", dest="sender")
     r = sub.add_parser("restore"); r.add_argument("--dry-run", action="store_true")
+    r.add_argument("--other-host-ok", action="store_true", help="the other host is dead: resume its sessions here")
     w = sub.add_parser("wake"); w.add_argument("name"); w.add_argument("-m", "--message"); w.add_argument("--dry-run", action="store_true")
+    w.add_argument("--other-host-ok", action="store_true", help="the other host is dead: resume it here")
     s = sub.add_parser("send"); s.add_argument("name"); s.add_argument("-m", "--message", required=True)
     k = sub.add_parser("keep"); k.add_argument("name"); k.add_argument("policy", help="pin | default | <hours>")
     t = sub.add_parser("tick"); t.add_argument("--apply", action="store_true", help="really idle-stop sessions over their keep limit")
