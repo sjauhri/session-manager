@@ -12,7 +12,8 @@
     sm.py keep NAME pin|default|<hours>   idle policy: pin = never idle-stopped, <hours> = stop sooner
     sm.py tick [--apply]         periodic check: pins, idle stops (only with --apply), minutes to job end
     sm.py check-names            live sessions peers can't reach by name
-    sm.py boot                   after a job restart: resume session-manager with the runbook prompt
+    sm.py boot [--other-host-ok] after a job restart: resume session-manager with the runbook prompt
+                                 (--other-host-ok: moving all sessions here from another host)
 
 Facts this relies on (verified on 2.1.303, see ../docs/current_plans/claude_restart_workflow.md):
 - A live session = a ~/.claude/sessions/<pid>.json record whose pid is alive. Exact, survives upgrades.
@@ -619,13 +620,15 @@ def cmd_boot(a):
     ag = agents()
     sid = resolve(MANAGER, ag)
     go = (f"You are `{MANAGER}` (session {ag[sid]['sessionId']}). The host restarted. "
-          f"Run the restart runbook in {os.path.join(HERE, 'README.md')} now, then report to the user.")
+          f"Run the restart runbook in {os.path.join(HERE, 'README.md')} now, then report to the user."
+          + (" The sessions moved from another host: use `restore --other-host-ok`, then fix copies "
+             "(README: Switching hosts, step 4)." if a.other_host_ok else ""))
     if sid in live():
         print(f"{MANAGER} is live: tell it \"run the restart runbook\".")
         return
-    if sid in elsewhere():
+    if sid in elsewhere() and not a.other_host_ok:
         sys.exit(f"{MANAGER} was active on another host in the last {OTHER_HOST_H} h: resuming it here would start a "
-                 "copy. Use it there, or wait until that host is gone.")
+                 "copy. Use it there, or stop that host's daemon and run boot --other-host-ok.")
     print(f"resume {sid}  {MANAGER}")
     r = subprocess.run(["claude", "--bg", "--resume", ag[sid]["sessionId"], go],
                        capture_output=True, text=True, timeout=180, cwd=ag[sid].get("cwd") or None)
@@ -669,7 +672,8 @@ def main():
     k = sub.add_parser("keep"); k.add_argument("name"); k.add_argument("policy", help="pin | default | <hours>")
     t = sub.add_parser("tick"); t.add_argument("--apply", action="store_true", help="really idle-stop sessions over their keep limit")
     sub.add_parser("check-names")
-    sub.add_parser("boot")
+    b = sub.add_parser("boot")
+    b.add_argument("--other-host-ok", action="store_true", help="sessions moved here from another host (its daemon is stopped)")
     a = p.parse_args()
     {None: cmd_status, "status": cmd_status, "dir": cmd_dir, "lost": cmd_lost, "request": cmd_request, "restore": cmd_restore,
      "wake": cmd_wake, "send": cmd_send, "keep": cmd_keep,

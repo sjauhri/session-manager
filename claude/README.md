@@ -53,6 +53,27 @@ the manager is already running, just tell it "run the restart runbook".
    Tell the backup manager, if any, in one line: back, new job end time.
    List the sessions left asleep in one line.
 
+## Switching hosts (one daemon only)
+
+All hosts share `~/.claude` (NFS). Run sessions on **one** host. Any `claude` command started on a second
+node starts a second daemon: each host then sees the other's sessions as stopped, and `wake` starts copies
+(2026-11-23: about 15 copies). Plain shell commands (`git`, `sm.py status|send`) are fine on any node.
+
+To move all sessions from host A to host B (for example seti → rohan):
+1. **Warn.** Send each live session the job-end warning (step 3 text, "host switch" in place of "job ends").
+   Wait until the ones that are working say they saved notes.
+2. **Stop A.** On A, run `claude daemon stop`. Its sessions stop, and `session-manager` stops with them.
+   Don't run `claude` on A again.
+3. **Start B.** On B, run `python3 <repo>/claude/sm.py boot --other-host-ok`. That starts B's daemon and
+   resumes the manager, which runs the runbook with `restore --other-host-ok`. The flag is needed because
+   A's sessions count as active elsewhere for 6 h; status shows them as `OTHERHOST`.
+4. **Fix copies.** On 2.1.330, a resume can start a copy with a new id and an auto name even when the
+   original has stopped (logged `resume COPIED`; cause not found). The copy has the full history and is the
+   only live instance. Tell it who it is with `sm.py send <id>`, and have the user `/rename <name>` it
+   (`claude attach <id>`). An old stopped session with the same name makes `wake <name>` ambiguous, so a
+   wake refuses instead of copying.
+5. **Tell remote peers** the manager's new address (step 4).
+
 ## Commands
 
 `python3 <repo>/claude/sm.py <command>`. Sessions usually use the top-level [`../sm.py`](../sm.py)
