@@ -421,11 +421,12 @@ def blocked_at_crash(sid, log_lines):
 
 def plan_restore(ag, lv, fleet):
     """(when, to resume, asleep requests): resume = sessions the daemon marked `failed` within FAILED_WINDOW_H,
-    plus `blocked` (needs input) ones that died rather than being stopped, plus sessions that asked to be woken
-    (`request` by themselves or the user), plus PINNED sessions (every session this script resumes is pinned, so
-    pinned = was running; a SLURM job end kills the daemon without a log line), still down. A pinned session whose
-    name a newer session now carries (a resume that came back as a copy) is skipped.
-    Everything else stays asleep; leads wake their sub-sessions when they need them.
+    plus sessions that asked to be woken
+    (`request` by themselves or the user), plus sessions whose last saved state is `working`/`running` within
+    FAILED_WINDOW_H (a SLURM job end kills the daemon without a log line, so they died mid-work), still down.
+    A session whose name a newer session now carries (a resume that came back as a copy) is skipped.
+    Pinning only stops idle stops; it does not mean "restore me". The job-end warning asks every session whether it
+    wants a wake (`request`). Everything else stays asleep; leads wake their sub-sessions when they need them.
     (The daemon.log replay is not used to decide: a later small daemon restart hid the real crash.)"""
     now = time.time()
     ok = lambda s: s not in lv and fleet["sessions"].get(s, {}).get("restore") != "never"
@@ -433,15 +434,19 @@ def plan_restore(ag, lv, fleet):
     recent = lambda t: (t or 0) > now - FAILED_WINDOW_H * 3600
     req = load_requests()
     asked = lambda s: req.get(s, {}).get("by") in (s, name(s, ag), "the user")
-    try:
-        pins = set(json.load(open(f"{CLAUDE}/jobs/pins.json")))
-    except (OSError, ValueError):
-        pins = set()
     upd = lambda s: job_state(s).get("updatedAt") or ""
     superseded = lambda s: any(o != s and ag[o].get("name") == ag[s].get("name") and upd(o) > upd(s) for o in ag)
-    pinned = lambda s: s in pins and not superseded(s)
-    down = sorted((s for s in ag if ok(s) and (recent(failed_at(s)) or recent(blocked_at_crash(s, log_lines))
-                                                or asked(s) or pinned(s))),
+
+    def mid_work(s):
+        st = job_state(s)
+        if st.get("state") not in ("working", "running") or superseded(s):
+            return False
+        try:
+            return recent(datetime.fromisoformat(st["updatedAt"].replace("Z", "+00:00")).timestamp())
+        except (KeyError, ValueError):
+            return False
+    # `blocked` ones are not resumed: like every running session, they were asked at job end (`request`)
+    down = sorted((s for s in ag if ok(s) and (recent(failed_at(s)) or mid_work(s) or asked(s))),
                   key=lambda s: name(s, ag))
     when = max((failed_at(s) for s in down if failed_at(s)), default=None)
     when = datetime.fromtimestamp(when, timezone.utc).isoformat(timespec="seconds") if when else None
