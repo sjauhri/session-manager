@@ -2,7 +2,7 @@
 """Cross-tool verbs: any session (Claude or Codex) finds, messages and wakes any other.
 
     sm.py dir [--json]           live sessions of every tool: name, tool, status, address
-    sm.py send NAME -m MSG       message a live session; the header says who sent it and how to reply
+    sm.py send NAME -m MSG       message a live Codex session (Claude 2.1.332+: use the SendMessage tool by name)
     sm.py wake NAME -m MSG       start a stopped session with MSG (a live one just gets the message)
     sm.py remote [add NAME ADDR --host H | rm NAME | self]
                                  Claude sessions on other machines, reached with SendMessage to their
@@ -131,8 +131,9 @@ def wrap(a, msg):
 def cmd_dir(a):
     check_sandbox()
     # last column: the address other machines use (SendMessage); Codex has none
-    rows = [(r.get("name") or s, "claude", r.get("status", "-"), "uds:" + r["messagingSocketPath"],
-             "bridge:" + r["bridgeSessionId"] if r.get("bridgeSessionId") else "-") for s, r in cl.live().items()]
+    rows = [(r.get("name") or s, "claude", r.get("status", "-"), "claude:" + s,
+             "bridge:" + r["bridgeSessionId"].replace("cse_", "session_") if r.get("bridgeSessionId") else "-")
+            for s, r in cl.live().items()]
     rows += [(t["name"], "codex", t["status"], "codex:" + i, "-") for i, t in codex_threads().items()
              if t["name"] and cx.is_live(t)]
     rows.sort()
@@ -142,7 +143,7 @@ def cmd_dir(a):
         return
     for r in rows:
         print("\t".join(r))
-    print(f"# python3 {TOP} send|wake <name> -m \"...\" (Claude peers also take SendMessage)."
+    print(f"# Claude: SendMessage tool, to: <name>. Codex: python3 {TOP} send <name> -m \"...\". Stopped: wake <name>."
           + (" remote = another machine: from a Claude session, SendMessage to its address; the status column is its host."
              if load_remote() else ""))
 
@@ -161,9 +162,8 @@ def cmd_send(a):
         sys.exit(f"{name} ({tool}) is stopped; wake it with: python3 {TOP} wake {a.name} -m \"...\"")
     text = wrap(a, a.message)
     if tool == "claude":
-        cl.deliver(cl.live()[key], text)
-    else:
-        cx.deliver(key, text)
+        sys.exit(cl.NO_SHELL_SEND.format(name=name))
+    cx.deliver(key, text)
     cl.log(f"send {tool}:{name} from {sender(a)[0]}")
     print(f"delivered to {tool}:{name}")
 
@@ -177,9 +177,7 @@ def cmd_wake(a):
         print(f"codex:{name} {'was live; message delivered' if live else 'woken with the message'}")
         return
     if live:
-        cl.deliver(cl.live()[key], wrap(a, a.message))
-        print(f"claude:{name} is live; message delivered")
-        return
+        sys.exit(f"claude:{name} is live, no wake needed. " + cl.NO_SHELL_SEND.format(name=name))
     ag = cl.agents()
     who = sender(a)[0]
     why = f"`{who}` woke you: {a.message}"
