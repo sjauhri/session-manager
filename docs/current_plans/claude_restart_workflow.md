@@ -25,9 +25,14 @@ relies on. Facts were tested on Claude Code 2.1.303 (2026-10-19) unless marked.
 
 ## Tested facts
 
-- **Which sessions are live:** a `~/.claude/sessions/<pid>.json` file (`kind: bg`) whose process is
-  running with the same start time. It holds the session's id, name, socket and status (`busy`, `idle`,
-  or `shell` when a background shell runs). It also holds `bridgeSessionId`, the Remote Control address.
+- **Which sessions are live:** the `kind: background` rows of `claude agents --json` (id, sessionId, name,
+  state, cwd). The Remote Control address is `bridgeSessionId` in `~/.claude/jobs/<id>/state.json`.
+  (Before 2.1.332: `~/.claude/sessions/<pid>.json` records, now gone.)
+- **Idle stop:** about 1 h on 2.1.332 (8 h before). Pinned sessions (`~/.claude/jobs/pins.json`) are exempt;
+  `sm.py` pins every session it resumes, and `restore` resumes pinned sessions that are down.
+- **One daemon:** two nodes sharing `~/.claude` that each run a daemon see each other's sessions as stopped,
+  and a resume of one starts a copy with a new id (2.1.330). Nodes may share `/etc/machine-id`, so this is
+  not detectable from the session files; run one daemon (inside the SLURM job).
 - **Resume:** `claude --bg --resume <uuid> "<prompt>"` on a stopped session keeps its id, name and
   model, and runs the prompt as a normal turn. It must run in the session's own folder.
   - On a live session it starts a second copy. So `sm.py` checks liveness right before every resume.

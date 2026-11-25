@@ -4,9 +4,10 @@ Keeps your background coding-agent sessions (Claude Code and Codex) going when t
 This covers a cluster job that hits its time limit, a reboot, or a crash.
 
 What it does:
-- **Restore.** After a restart, it resumes only the sessions that were in the middle of work. Idle
-  sessions stay asleep.
-- **Message.** Any session can list, message and wake any other session, Claude or Codex.
+- **Restore.** After a restart, it resumes the sessions that were running (pinned) or in the middle of
+  work. A SLURM job script can run the restart for you.
+- **Message.** Any session can list and wake any other session; Claude sessions message each other with
+  the SendMessage tool, Codex sessions with `sm.py send`.
 - **Other machines.** Claude sessions on other computers or clusters can message sessions here, and
   the reverse. ([How](docs/current_plans/cross_tool_messaging.md#claude-sessions-on-other-machines))
 - **Idle time.** You set how long a session may sit idle before it is stopped.
@@ -73,7 +74,7 @@ python3 <repo>/sm.py <command>
 | command | what it does |
 |---|---|
 | `dir` | list live sessions (all tools, plus other machines) with their addresses |
-| `send NAME -m MSG` | message a live session here |
+| `send NAME -m MSG` | message a live Codex session (Claude: the SendMessage tool) |
 | `wake NAME -m MSG` | start a stopped session here with a task. Never touches a live one |
 | `remote` | list the sessions on other machines |
 | `remote add NAME ADDR --host H` | add a session on another machine |

@@ -21,7 +21,7 @@ There is no standard way for these tools to talk. Neither supports A2A. Compared
 
 | to | how |
 |---|---|
-| a live Claude session | `sm.py send` connects to the session's socket (`messagingSocketPath`). It sends a token line, then the message. The token is in `~/.claude/sessions/<pid>.<sha256(socket path)>.key`. An idle session starts a turn right away |
+| a live Claude session | the SendMessage tool, `to:` its name, from another Claude session. 2.1.332 removed the per-session peer keys, so a shell can't send any more; `sm.py send` says so. An idle session starts a turn right away |
 | a live Codex thread | `codex queue --thread <uuid> --message …`. An idle thread runs it now; a busy one after its current turn |
 | a stopped Claude session | `claude --bg --resume <id> "<message>"` ([details](claude_restart_workflow.md)) |
 | a stopped Codex thread | queue the message, then load the thread (`thread/resume`). It then runs the queue |
@@ -84,7 +84,7 @@ Codex runs commands in a sandbox. Inside it, other processes are hidden and sock
 so every session looks stopped. [`codex/session-manager.rules.in`](../../codex/session-manager.rules.in)
 (installed by `csm.py install-rules`) fixes this:
 
-- `sm.py dir` and `sm.py send` run outside the sandbox, with no prompt.
+- `sm.py dir` and `sm.py send` (Codex targets) run outside the sandbox, with no prompt.
 - `sm.py wake` asks the user first, because a woken session costs usage.
 - Nothing else is allowed.
 
