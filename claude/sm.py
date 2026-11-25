@@ -36,10 +36,12 @@ Facts this relies on (verified on 2.1.303, updated for 2.1.332; see ../docs/curr
 """
 import argparse
 import fcntl
+import glob
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -98,14 +100,39 @@ def agents():
     return {x["id"]: x for x in json.loads(r.stdout) if x.get("kind") == "background"}
 
 
+def rv_alive(sid):
+    """True if the daemon's rendezvous socket for this session accepts a connection (this host's daemon only).
+    None if there is no such socket dir (another daemon layout)."""
+    paths = glob.glob(f"/tmp/cc-daemon-{os.getuid()}/*/rv/{sid}.sock")
+    if not glob.glob(f"/tmp/cc-daemon-{os.getuid()}/*/rv"):
+        return None
+    for path in paths:
+        s = socket.socket(socket.AF_UNIX)
+        s.settimeout(2)
+        try:
+            s.connect(path)
+            return True
+        except OSError:
+            pass
+        finally:
+            s.close()
+    return False
+
+
 def live():
-    """short id -> record for every running background session (`claude agents --json`: id, sessionId, name,
-    state, cwd), plus `status` (busy/idle) and `bridgeSessionId` from its job state."""
-    r = subprocess.run([CLI, "agents", "--json"], capture_output=True, text=True, timeout=60, check=True)
+    """short id -> record for every running background session: a `claude agents --json --all` row whose rendezvous
+    socket answers. (`--json` alone leaves out sessions that finished their turn, state `done`, though they still
+    run.) Adds `status` (busy/idle) and `bridgeSessionId` from the job state."""
+    r = subprocess.run([CLI, "agents", "--json", "--all"], capture_output=True, text=True, timeout=60, check=True)
+    rows = [x for x in json.loads(r.stdout) if x.get("kind") == "background"]
+    if rv_alive("-") is None:  # no rendezvous dir: fall back to the active list
+        r = subprocess.run([CLI, "agents", "--json"], capture_output=True, text=True, timeout=60, check=True)
+        active = {x["id"] for x in json.loads(r.stdout)}
+        rows = [x for x in rows if x["id"] in active]
+    else:
+        rows = [x for x in rows if rv_alive(x["id"])]  # a dead session keeps its last state: test every row
     out = {}
-    for x in json.loads(r.stdout):
-        if x.get("kind") != "background":
-            continue
+    for x in rows:
         st = job_state(x["id"])
         x["status"] = "busy" if x.get("state") == "working" else "idle"
         x["bridgeSessionId"] = st.get("bridgeSessionId")
